@@ -1,0 +1,31 @@
+# Participant data and outputs -- never commit (see ../CLAUDE.md).
+# The pipeline writes to ../togo_app/data/; anything data-like here is a mistake.
+data/
+*_WIDE*
+*Full Data*
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.json
+*.parquet
+*.pkl
+*.dta
+*.sav
+*.gpkg
+*.geojson
+*.png
+*.pdf
+*.html
+*.log
+~$*
+
+# Environments / caches / local tooling
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+.claude/.cc-writes/
+.claude/settings.local.json
+.env
+.env.*

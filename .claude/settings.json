@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "deny": [
+      "Read(./data/**)",
+      "Read(./table_analysis/data/**)",
+      "Read(./table_analysis/radio_matching/**)",
+      "Read(./.pii_canary/**)",
+      "Read(**/*_WIDE*)",
+      "Read(**/*Full Data*)",
+      "Read(**/*.dta)",
+      "Read(**/*.sav)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Edit(./data/**)",
+      "Edit(./table_analysis/data/**)",
+      "Edit(./.claude/**)",
+      "Edit(./.pii_canary/**)",
+      "WebFetch"
+    ],
+    "blockReadsOutsideWorkingDirectories": true
+  },
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
+    "filesystem": {
+      "denyRead": [
+        "./data",
+        "./.pii_canary",
+        "/Users/kt/Documents/work/AIM Charities/FEM/2. Remote Desktop Notes/Family Planning/1. Country-specific research/Angola",
+        "/Users/kt/Documents/work/AIM Charities/FEM/2. Remote Desktop Notes/Family Planning/1. Country-specific research/Benin",
+        "/Users/kt/Documents/work/AIM Charities/FEM/2. Remote Desktop Notes/Family Planning/1. Country-specific research/Chad",
+        "/Users/kt/Documents/work/AIM Charities/FEM/2. Remote Desktop Notes/Family Planning/1. Country-specific research/DRC",
+        "/Users/kt/Documents/work/AIM Charities/FEM/2. Remote Desktop Notes/Family Planning/1. Country-specific research/Niger",
+        "/Users/kt/Documents/work/AIM Charities/FEM/2. Remote Desktop Notes/Family Planning/1. Country-specific research/Nigeria",
+        "/Users/kt/Documents/work/AIM Charities/FEM/2. Remote Desktop Notes/Family Planning/1. Country-specific research/Senegal",
+        "/Users/kt/Documents/work/AIM Charities/FEM/2. Remote Desktop Notes/Family Planning/1. Country-specific research/burundi"
+      ]
+    }
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write|NotebookEdit|Grep|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pii_guard.py\"",
+            "timeout": 20,
+            "onFailure": "block",
+            "statusMessage": "PII guard"
+          }
+        ]
+      }
+    ]
+  }
+}

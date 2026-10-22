@@ -1,0 +1,77 @@
+# Participant data is personal data under GDPR -- never commit it (see ../CLAUDE.md).
+# Default-deny: data and output file types are ignored everywhere in table_analysis,
+# with narrow exceptions for synthetic test fixtures and project config below.
+
+# --- Data folders ---
+data/
+radio_matching/
+**/data/
+
+# --- SurveyCTO exports / QA copies ---
+*_WIDE*
+*Full Data*
+
+# --- Data and output file types (anywhere, incl. files written to the working dir) ---
+*.csv
+*.tsv
+*.xlsx
+*.xlsm
+*.xls
+*.json
+*.parquet
+*.feather
+*.pkl
+*.pickle
+*.h5
+*.dta
+*.sav
+*.rds
+*.RData
+*.db
+*.sqlite
+*.geojson
+*.gpkg
+*.shp
+*.shx
+*.dbf
+*.prj
+*.kml
+*.kmz
+*.zip
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.pdf
+*.html
+*.log
+*.out
+
+# --- Documents ---
+Togo Data Processing Methods.docx
+
+# --- Exceptions: synthetic fixtures and project config only ---
+!tests/
+!tests/fixtures/
+!tests/fixtures/**
+!requirements.txt
+
+# --- Notebooks: committed, but only with outputs cleared ---
+# Run `jupyter nbconvert --clear-output --inplace *.ipynb` before committing.
+.ipynb_checkpoints/
+
+# --- Office lock files ---
+~$*
+.~lock.*
+
+# --- Environments / caches / local tooling ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+.claude/.cc-writes/
+.claude/settings.local.json
+.env
+.env.*

@@ -1,0 +1,30 @@
+# Participant data -- never commit or share (see CLAUDE.md)
+data/
+raw_data/
+table_analysis/data/
+table_analysis/radio_matching/
+.pii_canary/
+*_WIDE*
+*Full Data*
+*.dta
+*.sav
+~$*
+
+# Not part of this repo (togo_app is a separate Streamlit repo)
+togo_app/
+.togo_app_benin_git_backup/
+
+# Environments / caches / local tooling
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.DS_Store
+**/.claude/.cc-writes/
+**/.claude/settings.local.json
+.env
+.env.*
+
+# Old nested repo from the copied pipeline_output (history backup)
+.pipeline_output_git_backup/
