@@ -5,3 +5,4 @@ table_analysis/data/*
 table_analysis/.DS_Store
 data/*
 benin_app/
+.pipeline_output_git_backup/

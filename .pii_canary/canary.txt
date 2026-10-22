@@ -1,0 +1,3 @@
+PII-CANARY-7f3a9c -- fake value, not participant data.
+This folder is read-protected exactly like the data folders (see .claude/settings.json).
+If Claude can ever print this line, the read protection is NOT working.
