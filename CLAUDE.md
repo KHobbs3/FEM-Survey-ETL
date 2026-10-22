@@ -1,0 +1,2 @@
+# Claude Instructions
+Survey data is participant personal data under GDPR and our consent commitments. Do not read, open, print, or load any file under the data directory. Do not use cat, head, df.head(), print(df), df.sample(), or View() on participant data. Work from the SurveyCTO form definition, the codebook, and synthetic fixtures in tests/fixtures/. Write scripts; the researcher runs them and reports back aggregate output.
