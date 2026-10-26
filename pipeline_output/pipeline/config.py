@@ -75,6 +75,13 @@ DIR_STATEMENT_LABELS = os.path.join(APP_DATA_DIR, "statement_labels.csv")
 
 WEIGHT_COL = "combined_weight_adjusted"
 
+# Design columns for the headline-indicator CIs. cluster_key is the key the
+# weights were joined on in table_analysis/src/funcs.py, built from the
+# CORRECTED cluster assigned in 02a_correct_locations (override > gps > name
+# > gps_snap). Stratum = province, the sampling stratum.
+CI_CLUSTER_COL = "cluster_key"
+CI_STRATUM_COL = "province"
+
 USER_GROUPS    = ["user", "past_user"]
 NONUSER_GROUPS = ["nonuser", "future_user"]
 ALL_USE_GROUPS = USER_GROUPS + NONUSER_GROUPS

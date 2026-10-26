@@ -21,6 +21,13 @@ python -m pipeline.run_pipeline        # all pages, or --pages access radio
 
 Pages: `respondents`, `access`, `statements`, `family_planning`, `personality`, `personas`, `radio`, `drivers_barriers`.
 
+## Weights and key indicators
+
+- Estimates are weighted by `WEIGHT_COL` (`combined_weight_adjusted`), which `table_analysis/02b` post-stratifies to province population shares.
+- `family_planning` writes `fp_headline.csv`: mCPR, unmet need, unmet demand, demand satisfied and awareness (all / non-users) for the full sample and all women, with 95% CIs from a Rao-Wu cluster bootstrap (clusters = `CI_CLUSTER_COL`, the corrected `cluster_key`; strata = `CI_STRATUM_COL`, province; 1,000 replicates).
+- Unmet need counts "more than 2 years" and "no more children" only (DHS-style; "1–2 years" is excluded). `fp_unmet.csv` uses the same definition.
+- `utils.weighted_mean` excludes the -88/-99/-22 skip codes, so travel times and costs average real answers only.
+
 ## Data handling
 
 Reads respondent-level data; writes only counts and proportions, outside this folder. `fp_nonuse_reasons.csv` and the radio tables include free-text answers, so review them before sharing.

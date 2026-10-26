@@ -18,7 +18,7 @@ import os
 
 from pipeline.config import (
     WEIGHT_COL, SPLIT_COLS, APP_DATA_DIR,
-    CONTRACEPTIVE_METHODS,
+    CONTRACEPTIVE_METHODS, CI_CLUSTER_COL, CI_STRATUM_COL,
 )
 from pipeline.utils import (
     weighted_prop, weighted_counts, weighted_multiselect_counts,
@@ -200,7 +200,11 @@ def _funnel_row(df, split_col, group_val):
 # (don't know / prefer not to say) are excluded from "wants to delay or
 # limit" -- they simply don't match WANTS_TO_DELAY_CODES below, the same
 # way -88/-99 are excluded elsewhere in this file.
-WANTS_TO_DELAY_CODES = [3, 4, 6]
+# 2026-10-26: DHS-style definition, per the user -- 4 (more than 2 years) and
+# 6 (no more children) only. 3 ("1-2 years") was dropped: the bucket straddles
+# DHS's 2-year line, so someone wanting to wait 13 months landed in the same
+# bucket as someone wanting 23, over-counting unmet need.
+WANTS_TO_DELAY_CODES = [4, 6]
 # Match against TIME_TO_PREGNANT_FR's label text (confirmed via
 # validate_pipeline.py --raw to be what this column actually holds -- see
 # TIME_TO_PREGNANT_FR's comment above), not TIME_TO_PREGNANT's numeric
@@ -254,6 +258,105 @@ def _unmet_row(df, split_col, group_val):
     }
 
 
+# ── Headline indicators with design-based 95% CIs ─────────────────────────────
+# Full sample and all women, same indicators and method as Niger's pipeline.
+# Point estimates use the same weighted, whole-group denominators as
+# _funnel_row / _unmet_row. CIs come from a Rao-Wu rescaling bootstrap: within
+# each stratum of n_h clusters, draw n_h-1 clusters with replacement and scale
+# their weights by n_h/(n_h-1) x times drawn; CI = 2.5th-97.5th percentile of
+# the replicate estimates. Women are computed from the same replicates (domain
+# estimation), not resampled alone. Cluster/stratum columns come from
+# config.CI_CLUSTER_COL / CI_STRATUM_COL -- the key the weights were joined on,
+# i.e. the CORRECTED location from table_analysis/02a_correct_locations.
+N_BOOT = 1000
+BOOT_SEED = 2026
+
+
+def _headline_flags(df):
+    """Boolean arrays the headline indicators are built from."""
+    using_any = df["current_use"].fillna("NA").str.contains('Oui').to_numpy()
+    timing_col = df["time_before_preferred_pregnancy"]
+    wants_to_delay = (
+        pd.to_numeric(timing_col, errors="coerce").isin(WANTS_TO_DELAY_CODES)
+        | timing_col.astype(str).isin(WANTS_TO_DELAY_LABELS)
+    ).to_numpy()
+    return {
+        "any":    using_any,
+        "modern": df["current_use_methods"].apply(_mentions_modern_method).to_numpy(),
+        "unmet":  wants_to_delay & ~using_any,
+        "open":   df["future_intent"].fillna("NA").str.contains('Oui').to_numpy(),
+        "aware":  df["known_contraceptive_options"].apply(_mentions_modern_method).to_numpy(),
+    }
+
+
+def _headline_values(w, pop, f):
+    def share(num, den):
+        d = (w * den).sum()
+        return (w * (num & den)).sum() / d if d else np.nan
+
+    mcpr, cpr, need = share(f["modern"], pop), share(f["any"], pop), share(f["unmet"], pop)
+    return {
+        "mcpr":             mcpr,
+        "unmet_need":       need,
+        "unmet_demand":     share(f["unmet"] & f["open"], pop),
+        # Official DHS formula: mCPR / (total CPR + unmet need) -- see
+        # page_family_planning.py render_unmet for why total CPR, not mCPR.
+        "demand_satisfied": mcpr / (cpr + need) if (cpr + need) else np.nan,
+        "aware_modern":     share(f["aware"], pop),
+        "aware_modern_nonusers": share(f["aware"], pop & ~f["any"]),
+    }
+
+
+def _rao_wu_multipliers(df, rng):
+    """(N_BOOT, n_rows) weight multipliers, or None if the design columns are missing."""
+    missing = [c for c in (CI_CLUSTER_COL, CI_STRATUM_COL) if c not in df.columns]
+    if missing:
+        print(f"  [family_planning] WARNING: {missing} not in data -- headline CIs left blank")
+        return None
+    clusters = df[CI_CLUSTER_COL].astype(str).str.strip().to_numpy()
+    strata = df[CI_STRATUM_COL].astype(str).str.strip().to_numpy()
+    mult = np.ones((N_BOOT, len(df)))
+    for s in np.unique(strata):
+        rows = strata == s
+        cl, pos = np.unique(clusters[rows], return_inverse=True)
+        n_h = len(cl)
+        if n_h < 2:
+            print(f"  [family_planning] WARNING: stratum {s!r} has 1 cluster -- no CI variance from it")
+            continue
+        draws = rng.integers(0, n_h, size=(N_BOOT, n_h - 1))
+        counts = np.stack([np.bincount(d, minlength=n_h) for d in draws])
+        mult[:, rows] = (counts * n_h / (n_h - 1))[:, pos]
+    print(f"  [family_planning] CI design: {len(np.unique(strata))} strata ({CI_STRATUM_COL}), "
+          f"{len(np.unique(clusters))} clusters ({CI_CLUSTER_COL}), {N_BOOT} bootstrap replicates")
+    return mult
+
+
+def _headline_table(df, women_mask):
+    w = df[WEIGHT_COL].fillna(0).to_numpy()
+    n_no_weight = int(df[WEIGHT_COL].isna().sum())
+    if n_no_weight:
+        print(f"  [family_planning] note: {n_no_weight} respondents have no weight "
+              f"(excluded from estimates, still counted in n_unweighted)")
+    f = _headline_flags(df)
+    pops = {"full_sample": np.ones(len(df), dtype=bool), "women": women_mask.to_numpy()}
+    mult = _rao_wu_multipliers(df, np.random.default_rng(BOOT_SEED))
+
+    rows = []
+    for pop_name, pop in pops.items():
+        point = _headline_values(w, pop, f)
+        reps = None
+        if mult is not None:
+            reps = pd.DataFrame([_headline_values(w * m, pop, f) for m in mult])
+        for metric, value in point.items():
+            n = int((pop & ~f["any"]).sum()) if metric == "aware_modern_nonusers" else int(pop.sum())
+            lo = hi = np.nan
+            if reps is not None:
+                lo, hi = np.nanpercentile(reps[metric], [2.5, 97.5])
+            rows.append({"population": pop_name, "metric": metric, "value": value,
+                         "ci_low": lo, "ci_high": hi, "n_unweighted": n})
+    return pd.DataFrame(rows)
+
+
 def run(df):
     os.makedirs(APP_DATA_DIR, exist_ok=True)
     print("  [family_planning] running...")
@@ -292,6 +395,12 @@ def run(df):
             unmet_rows.append(_unmet_row(df, split_col, grp))
     save(pd.DataFrame([r for r in unmet_rows if r]),
          os.path.join(APP_DATA_DIR, "fp_unmet.csv"), "unmet need/demand")
+
+    # ── Headline indicators: full sample + all women ──────────────────────────
+    women = df["gender"].fillna("").str.contains("Femme|Female")
+    print(f"  [family_planning] headline: {len(df)} respondents, {int(women.sum())} women")
+    save(_headline_table(df, women),
+         os.path.join(APP_DATA_DIR, "fp_headline.csv"), "headline indicators")
 
     # ── Timing of next pregnancy ──────────────────────────────────────────────
     if "time_before_preferred_pregnancy" in df.columns:
