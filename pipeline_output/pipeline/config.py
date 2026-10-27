@@ -74,14 +74,44 @@ DIR_STATEMENT_LABELS = os.path.join(APP_DATA_DIR, "statement_labels.csv")
 # "Autre" write-in recoding (see other_recodes.py). Questions whose
 # "<question>_other" write-ins get exported for manual review; the reviewed
 # file is free text, so it lives with the data, not in the app.
-OTHER_RECODE_QUESTIONS = ["occupation", "religion", "radio_language", "reason_current_use"]
+OTHER_RECODE_QUESTIONS = ["occupation", "religion", "radio_language", "reason_current_use",
+                          "reason_nonuse_main"]
+# Questions whose answer is itself free text (no "Autre" choice / _other column).
+FREE_TEXT_RECODE_QUESTIONS = ["reason_current_nonuse"]
+# `--ai` codes each question against the answer labels of its "lists"
+# columns (its own choices, or the barriers list: non-users' reason_nonuse_mc
+# + users' barriers_users). "about" tells the model what the question asks.
+_BARRIERS = ["reason_nonuse_mc", "barriers_users"]
+AI_CODE_LISTS = {
+    "occupation":            {"lists": ["occupation"], "about": "the respondent's occupation"},
+    "religion":              {"lists": ["religion"], "about": "the respondent's religion"},
+    "radio_language":        {"lists": ["radio_language"],
+                              "about": "the language the respondent listens to the radio in"},
+    "reason_current_use":    {"lists": ["reason_current_use"],
+                              "about": "why the respondent uses contraception"},
+    "reason_nonuse_main":    {"lists": _BARRIERS,
+                              "about": "the main reason the respondent does not use contraception"},
+    "reason_current_nonuse": {"lists": _BARRIERS,
+                              "about": "why the respondent does not currently use contraception"},
+}
+AI_MODEL = "claude-opus-5-5"
+
+# Drivers/barriers lists for etl_driver_barrier_groups.py: each respondent's
+# answer is the first non-empty of these columns (user / non-user versions).
+DB_LISTS = {
+    "Driver":  ["reason_use_mc", "drivers_nonusers"],
+    "Barrier": ["reason_nonuse_mc", "barriers_users"],
+}
+# Which half of the bilingual "A/B" labels is the display language
+# (parent category = that half, up to the first ':').
+DB_LABEL_INDEX = 0
 OTHER_WRITEINS_EXPORT = os.environ.get(
     "FEM_OTHER_WRITEINS",
     str(PROJECT_ROOT / "table_analysis" / "data" / "4_validation_checks" / "other_writeins.csv"),
 )
 OTHER_RECODES_PATH = os.environ.get(
     "FEM_OTHER_RECODES",
-    str(PROJECT_ROOT / "table_analysis" / "data" / "meta" / "other_recodes.csv"),
+    str(PROJECT_ROOT / "table_analysis" / "data" / "meta" / "other_recodes-ai-gen.csv"),
 )
 
 # ── Survey constants ──────────────────────────────────────────────────────────
