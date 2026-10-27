@@ -63,14 +63,17 @@ Togo has no cluster ids, so clusters link on settlement name (`CLUSTER_KEY = "Na
 1. Field-schedule settlements → the sampled cluster their GPS point falls in.
 2. Respondents, highest priority first: **override** (`manual_location_overrides.csv`) → **gps** (inside a sampled polygon) → **name** (QA location) → **gps_snap** (nearest within 1 km) → **unresolved** (kept, exported).
 3. `cluster_name` = `selected_name` from `DIR_LOCATION_REVIEW`. Review `02a_manual_review_vs_sample.csv` and save it there.
+4. `02a_manual_review_vs_sample_keys.csv` (in `4_validation_checks/`) lists the respondents behind each review row: `review_row` (the row number in the review CSV opened in a spreadsheet, header = row 1), the row's group columns, the final `cluster_name` and the `KEY` / `SubmissionDate` to look up in the QA document. Its coordinates are settlement points, not respondents' GPS.
 
 ### 02b: weights
 
 `calculate_three_stage_weights()` in [src/funcs.py](src/funcs.py), normalised to mean 1:
 
-1. **Cluster**: stratified PPS, 1 / (1 − (1 − p)^k); p = `proportion` within stratum, k = clusters surveyed there.
+1. **Cluster**: stratified PPS, 1 / (1 − (1 − p)^k); p = `proportion` within stratum, k = clusters surveyed there. No extra stratum factor (`USE_STRATUM_WEIGHT = False`): 1/π already reflects each province's allocation.
 2. **Household**: (cluster population / household size) / households interviewed.
-3. **Respondent**: eligible adults in the household.
+3. **Respondent**: eligible adults in the household. No separate non-response adjustment: the respondent is a random pick among available adults, so this lets them stand for everyone listed (the draw-attempt adjustment in `funcs.py` runs only for Benin, and is off there too since 2026-10-26).
+
+**Post-stratification** (`POSTSTRATIFY_ON = "province"`, in `02b`): each province's weights are scaled so its weighted share matches its frame population share (Statistics Canada 7.1.4.1). The factor is applied to both `normalized_weight` and `combined_weight_adjusted` — the pipeline's `WEIGHT_COL` — with the design weights kept as `normalized_weight_design` / `combined_weight_design`. Before 2026-10-26 only `normalized_weight` was post-stratified, so the app's figures were not.
 
 `load_sampling_frames()` rebuilds the frame as the draw saw it (`EXCLUDED_CLUSTERS`, `STRATA_MAP`, `MIN_CLUSTER_POPULATION`), then links each surveyed cluster to one frame row by point, else name. Unlinkable clusters stop the run.
 

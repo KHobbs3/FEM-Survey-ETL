@@ -48,7 +48,7 @@ radio_matching/
 *.out
 
 # --- Documents ---
-Togo Data Processing Methods.docx
+*.docx
 
 # --- Exceptions: synthetic fixtures and project config only ---
 !tests/

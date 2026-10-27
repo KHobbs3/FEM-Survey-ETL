@@ -33,6 +33,7 @@ import argparse
 import json
 import os
 import re
+import sys
 
 import numpy as np
 import pandas as pd
@@ -198,10 +199,17 @@ AI_SCHEMA = {
 
 def ai_suggest(out: pd.DataFrame, codes_by_q: dict) -> pd.DataFrame:
     """Fill blank `recode_to` for the AI_CODE_LISTS questions with Claude's
-    suggestion; existing codes (manual or earlier AI runs) are left alone."""
-    import anthropic
+    suggestion; existing codes (manual or earlier AI runs) are left alone.
+    Stops at the first API problem (no key, bad key, network...) keeping the
+    codes made so far -- re-running --ai continues with the blank ones."""
+    try:
+        import anthropic
+    except ImportError:
+        sys.exit("  [other] --ai needs the Anthropic SDK: pip install anthropic")
 
     client = anthropic.Anthropic()
+    no_key = ("  [other] No working Anthropic API key -- set ANTHROPIC_API_KEY (or run "
+              "`ant auth login`) and re-run --ai. Codes made so far are kept.")
     out = out.copy()
     for q, (codes, about) in codes_by_q.items():
         todo = out.index[(out["question"] == q) & (out["recode_to"] == "")]
@@ -225,16 +233,29 @@ def ai_suggest(out: pd.DataFrame, codes_by_q: dict) -> pd.DataFrame:
                       f"<categories>\n{categories}\n</categories>\n\n"
                       f"<existing_new_themes>\n{chr(10).join(themes)}\n</existing_new_themes>\n\n"
                       f"<answers>\n{answers}\n</answers>")
-            response = client.beta.messages.create(
-                model=AI_MODEL,
-                max_tokens=16000,
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",
-                system=AI_SYSTEM,
-                output_config={"effort": "low",
-                               "format": {"type": "json_schema", "schema": AI_SCHEMA}},
-                messages=[{"role": "user", "content": prompt}],
-            )
+            try:
+                response = client.beta.messages.create(
+                    model=AI_MODEL,
+                    max_tokens=16000,
+                    betas=["server-side-fallback-2026-07-01"],
+                    fallbacks="default",
+                    system=AI_SYSTEM,
+                    output_config={"effort": "low",
+                                   "format": {"type": "json_schema", "schema": AI_SCHEMA}},
+                    messages=[{"role": "user", "content": prompt}],
+                )
+            except anthropic.AuthenticationError:
+                print(no_key)
+                return out
+            except TypeError as e:   # the SDK's "Could not resolve authentication method"
+                if "authentication" not in str(e).lower():
+                    raise
+                print(no_key)
+                return out
+            except anthropic.APIError as e:
+                print(f"  [other] {q}: Anthropic API error ({type(e).__name__}) -- stopping. "
+                      f"Codes made so far are kept; re-run --ai to continue.")
+                return out
             if response.stop_reason in ("refusal", "max_tokens"):
                 print(f"  [other] {q}: batch {start // AI_BATCH_SIZE + 1} stopped "
                       f"({response.stop_reason}) -- left blank")

@@ -207,11 +207,14 @@ def add_engineered_columns(df: pd.DataFrame) -> pd.DataFrame:
       gender      -- normalised to "Femme"/"Homme" (normalize_gender)
       region      -- region from province, via PROVINCE_TO_REGION
       top_driver  -- respondent's main reason for using contraception
-                      (reason_use_main, users/past_users only; NaN for
-                      non-users -- filled to "Unknown" at clustering time,
-                      same convention as other clustering vars)
+                      (reason_use_main). Per the form, asked only of current
+                      users (current_use = yes, i.e. used a method in the
+                      past 6 months); NaN for everyone else -- filled to
+                      "Unknown" at clustering time, same convention as other
+                      clustering vars
       top_barrier -- respondent's main reason for NOT using contraception
-                      (reason_nonuse_main, non-users/future_users only)
+                      (reason_nonuse_main). Asked of everyone else: never-users
+                      (nonuser, future_user) AND past users (past_user)
 
     reason_use_main / reason_nonuse_main are confirmed field names from
     table_analysis/03_driver_barrier_table_w_counts.ipynb (the "main_drivers"/
