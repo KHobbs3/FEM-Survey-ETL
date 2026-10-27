@@ -92,6 +92,7 @@ def _multiselect_long(df, col, label_map, tag, split_cols, search_patterns=None)
     tmp.columns = ["label", "proportion"]
     tmp["split"] = "none"
     tmp["group"] = "all"
+    tmp["n"] = len(df)  # respondents in the group (the denominator)
     rows.append(tmp)
 
     # By splits
@@ -103,6 +104,7 @@ def _multiselect_long(df, col, label_map, tag, split_cols, search_patterns=None)
             .rename(columns={split_col: "group"})
         )
         melted["split"] = split_col
+        melted["n"] = melted["group"].map(df.groupby(split_col).size())
         rows.append(melted)
 
     result = pd.concat(rows, ignore_index=True)
@@ -187,13 +189,20 @@ def run(df):
              "goals achievable")
 
     # ── Role models ───────────────────────────────────────────────────────────
+    # Extra gender x age group split ("Femme ... | 21-30") so the page can
+    # filter on both at once.
+    rm_splits = SPLIT_COLS
+    if {"gender", "age_group"} <= set(df.columns):
+        df = df.assign(gender_age=(df["gender"].astype(str) + " | " + df["age_group"].astype(str))
+                       .mask(df["gender"].isna() | df["age_group"].isna()))
+        rm_splits = SPLIT_COLS + ["gender_age"]
     if "role_models" in df.columns:
-        g = _multiselect_long(df, "role_models", ROLE_MODELS, "role_models", SPLIT_COLS)
+        g = _multiselect_long(df, "role_models", ROLE_MODELS, "role_models", rm_splits)
         save(g, os.path.join(APP_DATA_DIR, "personality_role_models.csv"), "role models")
 
     # ── Likeable traits ───────────────────────────────────────────────────────
     if "likeable_traits" in df.columns:
-        g = _multiselect_long(df, "likeable_traits", LIKEABLE_TRAITS, "traits", SPLIT_COLS)
+        g = _multiselect_long(df, "likeable_traits", LIKEABLE_TRAITS, "traits", rm_splits)
         save(g, os.path.join(APP_DATA_DIR, "personality_likeable_traits.csv"),
              "likeable traits")
 

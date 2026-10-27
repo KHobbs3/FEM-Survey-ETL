@@ -15,7 +15,9 @@ value distributions, counts, and structural summaries.
 import argparse
 import os
 import sys
+import glob
 import textwrap
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -421,6 +423,7 @@ def validate_outputs():
     _validate_out_access()
     _validate_out_personality()
     _validate_out_personas()
+    validate_new_outputs()
 
 
 def _load_out(filename):
@@ -777,6 +780,283 @@ def _validate_out_personas():
     if profile is not None:
         vars_present = profile["variable"].unique().tolist() if "variable" in profile.columns else []
         _ok(f"Profile variables: {vars_present}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NEWER PAGES AND TABLES
+# Key FP indicators, driver/barrier parent groups, respondent profile, persona
+# splits, radio and drivers/barriers tables, "Autre" recodes, and the phone
+# survey change-over-time outputs. Same in every country's validate_pipeline.py.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+HEADLINE_METRICS = ["mcpr", "unmet_need", "unmet_demand", "demand_satisfied",
+                    "aware_modern", "aware_modern_nonusers"]
+
+
+def _require(df, filename, cols):
+    """Error on missing columns; True when all are present."""
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        _err(f"{filename}: missing columns {missing}")
+    return not missing
+
+
+def _check_share(df, filename, col):
+    """A 0-1 share column: no values outside [0, 1], not all null."""
+    vals = pd.to_numeric(df[col], errors="coerce").dropna()
+    if vals.empty:
+        _warn(f"{filename}: '{col}' is all null")
+    elif ((vals < 0) | (vals > 1)).any():
+        _err(f"{filename}: '{col}' has values outside 0-1 "
+             f"(range [{vals.min():.3f}, {vals.max():.3f}])")
+    else:
+        _ok(f"{filename}: '{col}' range [{vals.min():.3f}, {vals.max():.3f}]")
+
+
+def _latest_out(pattern):
+    """Newest file in APP_DATA_DIR matching a glob pattern, or None."""
+    matches = sorted(glob.glob(os.path.join(APP_DATA_DIR, pattern)))
+    return matches[-1] if matches else None
+
+
+def validate_new_outputs():
+    _validate_out_fp_headline()
+    _validate_out_driver_barrier_groups()
+    _validate_out_respondents_profile()
+    _validate_out_personality_filters()
+    _validate_out_persona_splits()
+    _validate_out_radio_tables()
+    _validate_out_drivers_barriers_table()
+    _validate_other_recodes()
+    _validate_change_over_time()
+
+
+def _validate_out_fp_headline():
+    """fp_headline.csv: key FP indicators (weighted, 95% CIs, unweighted n)."""
+    _section("fp_headline.csv (key FP indicators)")
+    df = _load_out("fp_headline.csv")
+    if df is None or not _require(df, "fp_headline.csv",
+                                  ["population", "metric", "value", "ci_low", "ci_high", "n_unweighted"]):
+        return
+    for pop in ["full_sample", "women"]:
+        missing = sorted(set(HEADLINE_METRICS) - set(df.loc[df["population"] == pop, "metric"]))
+        if missing:
+            _err(f"fp_headline.csv: population '{pop}' is missing metrics {missing}")
+        else:
+            _ok(f"fp_headline.csv: '{pop}' has all {len(HEADLINE_METRICS)} metrics")
+    for col in ["value", "ci_low", "ci_high"]:
+        _check_share(df, "fp_headline.csv", col)
+    has_ci = df[["ci_low", "ci_high"]].notna().all(axis=1)
+    if not has_ci.any():
+        _warn("fp_headline.csv: no confidence intervals (check CI_CLUSTER_COL / CI_STRATUM_COL)")
+    outside = has_ci & df["value"].notna() & ((df["value"] < df["ci_low"] - 1e-9) |
+                                              (df["value"] > df["ci_high"] + 1e-9))
+    if outside.any():
+        _err(f"fp_headline.csv: value outside its CI for "
+             f"{df.loc[outside, ['population', 'metric']].values.tolist()}")
+    if (df["n_unweighted"] <= 0).any():
+        _err("fp_headline.csv: some rows have n_unweighted <= 0")
+    else:
+        _ok(f"fp_headline.csv: n_unweighted range [{df['n_unweighted'].min()}, {df['n_unweighted'].max()}]")
+
+
+def _validate_out_driver_barrier_groups():
+    """driver_barrier_groups.csv: options grouped by parent category, >= 1 / >= 3."""
+    fname = "driver_barrier_groups.csv"
+    _section(f"{fname} (drivers/barriers by parent category)")
+    df = _load_out(fname)
+    if df is None or not _require(df, fname, ["type", "parent", "n_options", "split", "group", "threshold",
+                                              "proportion", "unweighted_proportion", "n", "weighted_n",
+                                              "base_n"]):
+        return
+    for t in ["Driver", "Barrier"]:
+        sub = df[df["type"] == t]
+        if sub.empty:
+            _warn(f"{fname}: no '{t}' rows (are the DB_LISTS columns in the data?)")
+        else:
+            _ok(f"{fname}: {t}: {sub['parent'].nunique()} parent categories, "
+                f"base n = {int(sub.loc[sub['split'] == 'none', 'base_n'].max())}")
+    for col in ["proportion", "unweighted_proportion"]:
+        _check_share(df, fname, col)
+    if (df["n"] > df["base_n"]).any():
+        _err(f"{fname}: n > base_n in {int((df['n'] > df['base_n']).sum())} rows")
+    if ((df["threshold"] == "at least 3") & (df["n_options"] < 3)).any():
+        _err(f"{fname}: 'at least 3' rows for parents with fewer than 3 options")
+    keys = ["type", "parent", "split", "group"]
+    wide = df.pivot_table(index=keys, columns="threshold", values="unweighted_proportion")
+    if {"at least 1", "at least 3"} <= set(wide.columns):
+        bad = (wide["at least 3"] > wide["at least 1"] + 1e-9).sum()
+        if bad:
+            _err(f"{fname}: 'at least 3' exceeds 'at least 1' in {int(bad)} groups")
+        else:
+            _ok(f"{fname}: 'at least 3' <= 'at least 1' everywhere")
+    for split in ["none"] + SPLIT_COLS:
+        if split not in set(df["split"]):
+            _warn(f"{fname}: no rows for split='{split}'")
+
+
+def _validate_out_respondents_profile():
+    fname = "respondents_profile.csv"
+    _section(fname)
+    df = _load_out(fname)
+    if df is None or not _require(df, fname, ["variable", "category", "count", "proportion"]):
+        return
+    _check_share(df, fname, "proportion")
+    _ok(f"{fname}: variables {sorted(df['variable'].unique().tolist())}")
+    if (df["count"] < 0).any():
+        _err(f"{fname}: negative counts")
+
+
+def _validate_out_personality_filters():
+    """Role models / traits: the gender x age split and group sizes behind the
+    Personality page filters."""
+    for fname in ["personality_role_models.csv", "personality_likeable_traits.csv"]:
+        _section(f"{fname} (gender + age filters)")
+        df = _load_out(fname)
+        if df is None:
+            continue
+        if "gender_age" not in set(df.get("split", [])):
+            _warn(f"{fname}: no 'gender_age' split -- the combined gender + age filter "
+                  f"will show 'not generated yet'. Re-run --pages personality.")
+        if "n" not in df.columns:
+            _warn(f"{fname}: no 'n' column -- the filters can't show group sizes.")
+            continue
+        n = df.drop_duplicates(["split", "group"]).set_index(["split", "group"])["n"]
+        overall = n.get(("none", "all"))
+        for split in ["gender", "age_group", "gender_age"]:
+            sub = n[n.index.get_level_values("split") == split]
+            if sub.empty:
+                continue
+            if overall is not None and sub.sum() > overall:
+                _err(f"{fname}: '{split}' group sizes add up to {int(sub.sum())}, "
+                     f"more than the {int(overall)} respondents overall")
+            small = int((sub < 30).sum())
+            _ok(f"{fname}: '{split}' {len(sub)} groups, n {int(sub.min())}-{int(sub.max())}"
+                + (f" ({small} under 30)" if small else ""))
+
+
+def _validate_out_persona_splits():
+    """Per-gender / per-region / per-use persona files, elbows and culture clusters."""
+    _section("persona splits, elbows and culture clusters")
+    names = sorted(os.path.basename(p) for p in glob.glob(os.path.join(APP_DATA_DIR, "personas_*.csv"))
+                   + glob.glob(os.path.join(APP_DATA_DIR, "culture_clusters_*.csv")))
+    names = [n for n in names if n not in ("personas_centroids.csv", "personas_profile.csv")]
+    if not names:
+        _warn("No persona split / culture cluster files found")
+    for fname in names:
+        df = _load_out(fname)
+        if df is None:
+            continue
+        if df.empty:
+            _err(f"{fname}: no rows")
+        if "elbow" in fname and {"k", "cost"} <= set(df.columns):
+            group_cols = [c for c in df.columns if c not in ("k", "cost", "chosen_k")]
+            for g, sub in (df.groupby(group_cols) if group_cols else [("all", df)]):
+                costs = sub.sort_values("k")["cost"].to_numpy()
+                if (np.diff(costs) > 1e-6).any():
+                    _warn(f"{fname}: cost rises with k for {g} (k-modes run may be unstable)")
+
+
+def _validate_out_radio_tables():
+    _section("radio question tables")
+    for kind in ["station", "state"]:
+        path = _latest_out(f"*_question_table_by_{kind}_*.csv")
+        if path is None:
+            _warn(f"No *_question_table_by_{kind}_*.csv in {APP_DATA_DIR} "
+                  f"(the app may load it from Drive instead)")
+            continue
+        df = pd.read_csv(path)
+        if df.empty or df.shape[1] < 2:
+            _err(f"{os.path.basename(path)}: empty or has no station/region columns")
+        else:
+            _ok(f"{os.path.basename(path)}: {len(df)} questions x {df.shape[1] - 1} columns")
+
+
+def _validate_out_drivers_barriers_table():
+    _section("drivers/barriers table")
+    path = _latest_out("*_drivers-barriers_table_*.csv")
+    if path is None:
+        _ok("No local drivers/barriers table (the app loads it from Drive)")
+        return
+    df = pd.read_csv(path)
+    fname = os.path.basename(path)
+    if _require(df, fname, ["Name", "Driver/Barrier", "Prevalence (All)", "N (All)"]):
+        counts = df["Driver/Barrier"].str.lower().value_counts().to_dict()
+        _ok(f"{fname}: {counts}")
+        # 03_driver_barrier_table_w_counts computes the "Prevalence" columns
+        # UNWEIGHTED (split_dribar_unweighted); only "Weighted N" uses weights.
+        if not any("weighted prevalence" in c.lower() and "unweighted" not in c.lower()
+                   for c in df.columns):
+            _warn(f"{fname}: 'Prevalence' columns are unweighted and there is no weighted "
+                  f"prevalence column, so the page's 'Prevalence (%)' and 'Unweighted "
+                  f"prevalence (%)' metrics show the same unweighted figures")
+        if "Weighted N (All)" not in df.columns:
+            _warn(f"{fname}: no 'Weighted N (All)' column")
+
+
+def _validate_other_recodes():
+    """The "Autre" / free-text recodes file applied by run_pipeline (counts only)."""
+    _section("'Autre' recodes (other_recodes)")
+    try:
+        from pipeline.config import OTHER_RECODES_PATH
+    except ImportError:
+        return
+    if not os.path.exists(OTHER_RECODES_PATH):
+        _warn(f"No recodes file at {OTHER_RECODES_PATH} -- 'Autre' answers are not recoded. "
+              f"Run `python -m pipeline.other_recodes --ai`.")
+        return
+    rec = pd.read_csv(OTHER_RECODES_PATH, dtype=str).fillna("")
+    if not _require(rec, os.path.basename(OTHER_RECODES_PATH), ["question", "other_text", "recode_to"]):
+        return
+    key = rec["question"] + "|" + rec["other_text"].str.strip().str.casefold()
+    if key.duplicated().any():
+        _warn(f"{int(key.duplicated().sum())} duplicate question/text rows -- the first is used")
+    for q, g in rec.groupby("question"):
+        coded = g["recode_to"].str.strip() != ""
+        ai = (g.get("coded_by", pd.Series("", index=g.index)) == "ai") & coded
+        _ok(f"{q}: {int(coded.sum())} of {len(g)} texts coded ({int(ai.sum())} by AI, not yet reviewed)")
+
+
+def _validate_change_over_time():
+    """Phone survey change-over-time outputs (3_linkage/), where they exist.
+    key_indicators_change.csv must carry unweighted_* columns next to the
+    weighted ones; the other comparisons are unweighted counts and shares."""
+    _section("change over time (phone survey comparisons)")
+    linkage = Path(__file__).resolve().parents[3] / "3_linkage"
+    if not linkage.exists():
+        _ok("No 3_linkage/ folder -- no phone survey round yet, nothing to check")
+        return
+    files = {
+        "outputs/key_indicators_change.csv":
+            ["baseline_value", "followup_value", "change_pp",
+             "unweighted_baseline_value", "unweighted_followup_value", "unweighted_change_pp"],
+        "outputs/pp_headline.csv": [],
+        "outputs/knowledge_change_summary.csv": ["known_baseline_pct", "known_pulse_pct"],
+    }
+    files.update({f"outputs/{n}_change_summary.csv": [] for n in
+                  ["fp_use", "unmet_need", "attitudes", "barriers"]})
+    files["outputs/method_switching_summary.csv"] = []
+    files.update({f"cross_sectional/outputs/{n}_change_summary_unlinked.csv": ["n_baseline", "n_pulse"]
+                  for n in ["knowledge", "fp_use", "unmet_need", "attitudes", "barriers"]})
+    files["cross_sectional/outputs/method_switching_summary_unlinked.csv"] = ["n_baseline", "n_pulse"]
+    for rel, cols in files.items():
+        path = linkage / rel
+        if not path.exists():
+            _warn(f"3_linkage/{rel} not found")
+            continue
+        df = pd.read_csv(path)
+        if df.empty:
+            _err(f"3_linkage/{rel}: no rows")
+            continue
+        if cols and not _require(df, rel, cols):
+            continue
+        _ok(f"3_linkage/{rel}: {len(df)} rows")
+        if rel.endswith("key_indicators_change.csv"):
+            for pre in ["", "unweighted_"]:
+                vals = df[f"{pre}baseline_value"].dropna()
+                if vals.empty:
+                    _err(f"{rel}: '{pre}baseline_value' is all null")
+            _ok(f"{rel}: weighted and unweighted estimates both present")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
