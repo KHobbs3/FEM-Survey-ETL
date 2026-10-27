@@ -40,10 +40,11 @@ import pipeline.etl_family_planning as etl_family_planning
 import pipeline.etl_personality     as etl_personality
 import pipeline.etl_personas        as etl_personas
 import pipeline.etl_radio           as etl_radio
+import pipeline.etl_driver_barrier_groups as etl_driver_barrier_groups
 import pipeline.etl_drivers_barriers as etl_drivers_barriers
 
 ALL_PAGES = ["respondents", "access", "statements", "family_planning", "personality", "personas", "radio",
-             "drivers_barriers"]
+             "drivers_barriers", "driver_barrier_groups"]
 
 def run_pipeline(pages=None):
     pages = pages or ALL_PAGES
@@ -88,6 +89,8 @@ def run_pipeline(pages=None):
                 etl_personas.run(df)
             elif page == "radio":
                 etl_radio.run(df, station_path)
+            elif page == "driver_barrier_groups":
+                etl_driver_barrier_groups.run(df)
             elif page == "drivers_barriers":
                 etl_drivers_barriers.run()
             else:
