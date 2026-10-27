@@ -21,6 +21,16 @@ python -m pipeline.run_pipeline        # all pages, or --pages access radio
 
 Pages: `respondents`, `access`, `statements`, `family_planning`, `personality`, `personas`, `radio`, `drivers_barriers`.
 
+## Recoding "Autre" write-ins
+
+Respondents who chose "Autre" for `occupation`, `religion`, `radio_language` or `reason_current_use` (`OTHER_RECODE_QUESTIONS` in `config.py`) often wrote a real answer in `<question>_other`. To code these by hand:
+
+1. `python -m pipeline.other_recodes` writes each distinct write-in, its count and a blank `recode_to` column to `table_analysis/data/4_validation_checks/other_writeins.csv`. It prints totals only.
+2. Fill in `recode_to` with an existing answer label (French is enough: "Artisan" matches "Artisan/…") or a new label. Leave it blank to keep "Autre". Save the file as `table_analysis/data/meta/other_recodes.csv`.
+3. Run the pipeline. `run_pipeline` applies the recodes straight after loading, so every page and the personas use them. With no recodes file it changes nothing.
+
+Re-run step 1 after new data arrives: answers you've already coded keep their `recode_to`, so only new write-ins need reviewing. Both files hold free text, so they stay in the data folder.
+
 ## Weights and key indicators
 
 - Estimates are weighted by `WEIGHT_COL` (`combined_weight_adjusted`), which `table_analysis/02b` post-stratifies to province population shares.

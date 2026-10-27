@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 
 from pipeline.config import DIR_MAPPED_DATA, APP_DATA_DIR, DIR_STATEMENT_LABELS, station_path, COUNTRY
 from pipeline.utils import load_raw
+from pipeline.other_recodes import apply_other_recodes
 
 import pipeline.etl_respondents     as etl_respondents
 import pipeline.etl_access         as etl_access
@@ -64,6 +65,7 @@ def run_pipeline(pages=None):
         sys.exit(1)
 
     df = load_raw(DIR_MAPPED_DATA)
+    df = apply_other_recodes(df)
     print()
 
     # Run selected ETL modules
