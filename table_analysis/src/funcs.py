@@ -149,35 +149,137 @@ def parse_hh_member_column(data, hh_member_col='hh_member_'):
 #     return settlements_chosen
 
 
+def pps_inclusion_probabilities(sizes, k, certainty_units=False):
+    """
+    Inclusion probability of every cluster in ONE stratum's frame after k PPS draws.
+
+    pi_i = 1 - (1 - p_i)^k, with p_i = size_i / stratum total.
+
+    With certainty_units=True, a cluster with k * p_i >= 1 is selected with certainty
+    (pi_i = 1). The other k - n_cert draws are PPS draws from the rest of the stratum,
+    so p_i is recomputed over the non-certainty clusters; this repeats until no new
+    cluster crosses the threshold.
+
+    Returns (pi, certain): two Series on the index of `sizes`.
+    """
+    sizes = pd.Series(sizes, dtype=float)
+    certain = pd.Series(False, index=sizes.index)
+    if certainty_units:
+        while True:
+            n_rest = k - certain.sum()
+            rest = sizes[~certain]
+            if n_rest <= 0 or rest.empty:
+                break
+            new = rest.index[n_rest * rest / rest.sum() >= 1]
+            if len(new) == 0:
+                break
+            certain[new] = True
+
+    n_rest = k - certain.sum()
+    pi = pd.Series(1.0, index=sizes.index)
+    if (~certain).any():
+        p = sizes[~certain] / sizes[~certain].sum()
+        pi[~certain] = 1 - (1 - p) ** n_rest
+    return pi, certain
+
+
+def household_response_rate(data):
+    """
+    Within-household response rate per respondent: random_draw_attempts / eligible_adults_in_hh,
+    capped at 1, with the Borgou day-1 and Plateau language rules below. Used by the
+    non-response adjustment (NONRESPONSE_ADJUSTMENT) and 05_province_response_rate.py.
+    Returns a Series aligned with data.
+    """
+    rate = data['random_draw_attempts'] / data['eligible_adults_in_hh']
+    # Cap at 100%: a handful of rows show more draw attempts than eligible adults
+    # recorded, which isn't possible -- the user attributed this to enumerator error
+    # (2026-08-19) rather than a real >100% response rate, so it's capped rather than
+    # left to inflate combined_weight_adjusted for those rows.
+    rate = rate.clip(upper=1.0)
+
+    # Borgou day 1 (2026-07-16): enumerators weren't accurately recording the number
+    # of eligible household members that day, so those rows' own response rate isn't
+    # trustworthy and shouldn't inform the Borgou adjustment -- but they should still
+    # receive the same adjustment as the rest of Borgou (confirmed by the user
+    # 2026-08-19; day-1 shows a narrower eligible_adults_in_hh range (only 1-2, never
+    # 3+) and 100% single-attempt draws vs. the rest of Borgou).
+    if 'starttime' in data.columns and 'province' in data.columns:
+        start_date = pd.to_datetime(data['starttime'], format='mixed', dayfirst=True).dt.date
+        borgou_day1 = (data['province'] == 'Borgou') & (start_date == pd.Timestamp('2026-07-16').date())
+        if borgou_day1.any():
+            borgou_rest = (data['province'] == 'Borgou') & (~borgou_day1)
+            borgou_pooled_rate = rate.loc[borgou_rest].mean()
+            print(f"\nBorgou day 1 (2026-07-16): {borgou_day1.sum()} respondents excluded from "
+                  f"computing the Borgou non-response adjustment; assigned the rest-of-Borgou "
+                  f"pooled rate ({borgou_pooled_rate:.1%}) instead of their own.")
+            rate.loc[borgou_day1] = borgou_pooled_rate
+
+    # Plateau non-response due to language barrier: 8 households in Plateau reached
+    # eligibility screening and were excluded specifically because the drawn respondent
+    # didn't speak the survey's administration language (Fon) -- confirmed as genuine
+    # non-response, not ineligibility, per the user 2026-08-19 ("they were nonresponsive
+    # because they could not speak the survey language"). These households were dropped
+    # as >90%-missing in 00_clean_data.ipynb and never appear in `data` at all, so they
+    # can't be individually weighted -- instead, every COMPLETED Plateau respondent's
+    # weight is inflated to also stand in for the households that couldn't be surveyed,
+    # so Plateau's weighted totals still reflect its true population.
+    # Source: data/4_validation_checks/00_unfinished_submissions.csv, rows with
+    # province==8 (Plateau) and language_1==0. Recompute this count if that file changes.
+    PLATEAU_LANGUAGE_NONRESPONSE_N = 8
+    if 'province' in data.columns:
+        plateau_mask = data['province'] == 'Plateau'
+        n_completed_plateau = plateau_mask.sum()
+        if n_completed_plateau > 0:
+            plateau_language_response_rate = n_completed_plateau / (n_completed_plateau + PLATEAU_LANGUAGE_NONRESPONSE_N)
+            print(f"\nPlateau language non-response: {PLATEAU_LANGUAGE_NONRESPONSE_N} households excluded "
+                  f"because the drawn respondent didn't speak the survey language, on top of "
+                  f"{n_completed_plateau} completed interviews. Inflating completed Plateau respondents' "
+                  f"weight by {1/plateau_language_response_rate:.3f}x ({plateau_language_response_rate:.1%} "
+                  f"effective response rate) so they also represent the households that couldn't be surveyed.")
+            rate.loc[plateau_mask] *= plateau_language_response_rate
+    return rate
+
+
 def calculate_three_stage_weights(settlements_eligible, settlements_chosen, data,
-                                  avg_household_size=5.5, allocation='unequal', k_draws=27, inclusion_probability='proportion'):
+                                  avg_household_size=5.5, allocation='unequal', k_draws=27, inclusion_probability='proportion',
+                                  use_stratum_weight=True, certainty_units=False, nonresponse_adjustment=False):
     """
     Calculate weights for three-stage stratified cluster sampling
-    
+
     DESIGN:
     -------
     Stage 1: Stratified PPS cluster sampling (9 per stratum)
     Stage 2: Convenience household selection (non-probability)
     Stage 3: Random selection of 1 eligible adult per household
-    
+
     LIMITATIONS:
     ------------
     - Stage 2 is convenience-based, so household weights are approximations
     - We estimate total households from population / avg household size
     - Results should be interpreted with appropriate caution
-    
+
     Parameters:
     -----------
     settlements_eligible : DataFrame with all eligible clusters
-    settlements_chosen : DataFrame with sampled clusters  
+    settlements_chosen : DataFrame with sampled clusters
     data : DataFrame with individual responses
-    hh_member_col : str, column name containing household member count
     avg_household_size : float, for estimating total households in cluster
-    
+    inclusion_probability : str, settlements_eligible column used as the PPS size measure
+    use_stratum_weight : bool (config.USE_STRATUM_WEIGHT). False = stage 1 is the PPS
+        cluster weight alone. The cluster weight already uses k_h, so each stratum's
+        weighted total is proportional to its population; multiplying by
+        (N_h/N)/(k_h/K) corrects for the allocation a second time.
+    certainty_units : bool (config.PPS_CERTAINTY_UNITS). True = clusters with
+        k_h * p_i >= 1 get inclusion probability 1 (see pps_inclusion_probabilities).
+    nonresponse_adjustment : bool (config.NONRESPONSE_ADJUSTMENT). True = divide by
+        random_draw_attempts / eligible_adults_in_hh (with the Borgou day-1 and Plateau
+        language rules). False = combined_weight_adjusted is the three-stage weight:
+        stage 3 already lets the respondent stand for every eligible adult listed.
+
     Returns:
     --------
     data_weighted : DataFrame with all weight components
-    weights_summary : DataFrame with weight breakdown by cluster
+    cluster_weights : DataFrame with weight breakdown by cluster (input to check_stage_weights)
     """
     
     print("="*70)
@@ -199,32 +301,48 @@ def calculate_three_stage_weights(settlements_eligible, settlements_chosen, data
 
             
     # Population by stratum
-    strata_counts = settlements_chosen.groupby('province').size()
     stratum_pops = settlements_eligible.groupby('province')['population'].sum()
     total_pop = stratum_pops.sum()
-    total_clusters = len(settlements_chosen)
     stratum_proportions = stratum_pops / total_pop
-    
+
+    # k_h = distinct clusters actually surveyed in the stratum (rows of settlements_chosen
+    # with respondents), not the allocation or every row drawn (which may include unused
+    # replacements). config.CLUSTERS_ALLOCATED holds the allocation, for reference only.
+    surveyed = (settlements_chosen['sample_number'].astype(str).str.strip()
+                .isin(data['location'].astype(str).str.strip()))
+    strata_counts = settlements_chosen[surveyed].groupby('province')['geom_id'].nunique()
+    total_clusters = strata_counts.sum()
+    if (~surveyed).any():
+        print(f"\n⚠️  {(~surveyed).sum()} settlements_chosen rows have no respondents and are not "
+              f"counted in k_h (rows per stratum: {settlements_chosen.groupby('province').size().to_dict()})")
+    print(f"\nk_h (distinct surveyed clusters): {strata_counts.to_dict()}")
+
     print("\nPopulation distribution:")
     for province, pop in stratum_pops.items():
         prop = stratum_proportions[province]
         print(f"  {province}: {pop:,} ({prop:.1%})")
 
     # Compute stratum weights depending on allocation performed
-    if allocation == 'equal':
+    if not use_stratum_weight:
+        settlements_chosen['stratum_weights'] = 1.0
+        print("\nStratum weight NOT applied (USE_STRATUM_WEIGHT=False): stage 1 = PPS cluster weight only.")
+        print("  The cluster weight already uses k_h, so each stratum's weighted total is")
+        print("  proportional to its population without an allocation correction.")
+
+    elif allocation == 'equal':
         k_per_stratum = strata_counts.iloc[0]
         n_strata = settlements_eligible['province'].nunique()
-        
+
         print(f"\nClusters per stratum: {k_per_stratum}")
         print(f"Total clusters: {total_clusters}")
         print(f"Number of strata: {n_strata}")
-        
+
         # Calculate stratum weights (for equal allocation)
         stratum_weights = stratum_proportions * n_strata
 
         # Add weights back to dataframe
-        settlements_chosen['stratum_weights'] = pd.Series(stratum_weights)
-        
+        settlements_chosen['stratum_weights'] = settlements_chosen['province'].map(stratum_weights)
+
         print("\nStratum weights (corrects for equal allocation):")
         for province, weight in stratum_weights.items():
             print(f"  {province}: {weight:.3f}")
@@ -232,43 +350,46 @@ def calculate_three_stage_weights(settlements_eligible, settlements_chosen, data
     elif allocation == 'unequal':
         # For UNEQUAL allocation:
         stratum_weights = {}
-        for province in settlements_eligible['province'].unique():
-            k_h = strata_counts[province]  # Actual clusters selected in this stratum
+        for province, k_h in strata_counts.items():  # Actual clusters surveyed in this stratum
             N_h = stratum_pops[province]   # Population in this stratum
-            
+
             # Stratum weight = (Population proportion) / (Sample proportion)
             stratum_weights[province] = (N_h / total_pop) / (k_h / total_clusters)
 
         # Add weights back to dataframe
-        settlements_chosen['stratum_weights'] = settlements_chosen.province.map(lambda x: stratum_weights[x])
-        
+        settlements_chosen['stratum_weights'] = settlements_chosen.province.map(stratum_weights)
+
         print("\nStratum weights (corrects for UNequal allocation):")
         print(settlements_chosen.groupby('province')['stratum_weights'].mean())
-    
+
     else:
         print('Please designation allocation="unequal" or "equal".')
 
     # Calculate inclusion probabilities WITHIN each stratum
+    settlements_chosen['certainty_unit'] = False
     for province in settlements_chosen['province'].unique():
         mask = settlements_chosen['province'] == province
-        k_h = strata_counts[province]
-        
-        # Get proportions for this stratum from settlements_eligible
-        stratum_data = settlements_eligible[settlements_eligible['province'] == province]
-        stratum_prop_sum = stratum_data['proportion'].sum()
-        
-        # Create mapping of geom_id to re-normalized proportion
-        prop_within = (stratum_data.set_index('geom_id')['proportion'] / stratum_prop_sum).to_dict()
-        
+        k_h = strata_counts.get(province, 0)
+        settlements_chosen.loc[mask, 'k_h'] = k_h
+        if k_h == 0:
+            continue
+
+        # Size measure for this stratum from settlements_eligible, re-normalized within stratum
+        stratum_data = settlements_eligible[settlements_eligible['province'] == province].set_index('geom_id')
+        sizes = stratum_data[inclusion_probability]
+        prop_within = sizes / sizes.sum()
+        pi, certain = pps_inclusion_probabilities(sizes, k_h, certainty_units)
+
         # Apply to settlements_chosen
-        settlements_chosen.loc[mask, 'proportion_within_stratum'] = (
-            settlements_chosen.loc[mask, 'geom_id'].map(prop_within)
-        )
-        
-        # Calculate inclusion probability with k_h draws
-        p_i = settlements_chosen.loc[mask, 'proportion_within_stratum']
-        settlements_chosen.loc[mask, 'inclusion_prob_exact'] = 1 - (1 - p_i) ** k_h
-        
+        geoms = settlements_chosen.loc[mask, 'geom_id']
+        settlements_chosen.loc[mask, 'proportion_within_stratum'] = geoms.map(prop_within)
+        settlements_chosen.loc[mask, 'inclusion_prob_exact'] = geoms.map(pi)
+        settlements_chosen.loc[mask, 'certainty_unit'] = geoms.map(certain).fillna(False).astype(bool)
+        if certain.any():
+            print(f"\n{province}: {certain.sum()} certainty cluster(s) (k_h*p_i >= 1) with "
+                  f"{prop_within[certain].sum():.0%} of the stratum; remaining {k_h - certain.sum()} "
+                  f"draws spread over the rest.")
+
         # Cluster weight = 1 / inclusion probability
         settlements_chosen.loc[mask, 'cluster_weight'] = (
             1.0 / settlements_chosen.loc[mask, 'inclusion_prob_exact']
@@ -357,11 +478,13 @@ def calculate_three_stage_weights(settlements_eligible, settlements_chosen, data
     print("COMBINING WEIGHTS")
     print("="*70)
 
+    cluster_weights = settlements_chosen_working.copy()
+
     # Merge Stage 1 and Stage 2 weights
     weights = settlements_chosen_working[[
             'sample_number', 'stratum_weights',
             'cluster_weight','stage1_weight', 'stage2_weight', 'province', 'geom_id'
-        ]]
+        ]].copy()
 
     # Drop residual weights from data
     data.drop(columns = [col for col in weights.columns if col in data.columns], errors='ignore', inplace=True)
@@ -429,57 +552,14 @@ def calculate_three_stage_weights(settlements_eligible, settlements_chosen, data
     print("="*70)
     
     # If random_draw_attempts = within-household contact attempts:
-    if 'random_draw_attempts' in data_weighted.columns:
+    if not nonresponse_adjustment:
+        print("\nSkipped (nonresponse_adjustment=False): stage 3 already lets the respondent "
+              "represent every eligible adult listed, and stage 2 covers households that "
+              "didn't take part.")
+        data_weighted['combined_weight_adjusted'] = data_weighted['combined_weight']
+    elif 'random_draw_attempts' in data_weighted.columns:
         # Household-level response rate. This adjusts Stage 3 weight for non-response.
-        data_weighted['household_response_rate'] = data_weighted.apply(
-            lambda x: x['random_draw_attempts'] /  x['eligible_adults_in_hh'], axis = 1
-        )
-        # Cap at 100%: a handful of rows show more draw attempts than eligible adults
-        # recorded, which isn't possible -- the user attributed this to enumerator error
-        # (2026-08-19) rather than a real >100% response rate, so it's capped rather than
-        # left to inflate combined_weight_adjusted for those rows.
-        data_weighted['household_response_rate'] = data_weighted['household_response_rate'].clip(upper=1.0)
-
-        # Borgou day 1 (2026-07-16): enumerators weren't accurately recording the number
-        # of eligible household members that day, so those rows' own response rate isn't
-        # trustworthy and shouldn't inform the Borgou adjustment -- but they should still
-        # receive the same adjustment as the rest of Borgou (confirmed by the user
-        # 2026-08-19; day-1 shows a narrower eligible_adults_in_hh range (only 1-2, never
-        # 3+) and 100% single-attempt draws vs. the rest of Borgou).
-        if 'starttime' in data_weighted.columns and 'province' in data_weighted.columns:
-            start_date = pd.to_datetime(data_weighted['starttime'], format='mixed', dayfirst=True).dt.date
-            borgou_day1 = (data_weighted['province'] == 'Borgou') & (start_date == pd.Timestamp('2026-07-16').date())
-            if borgou_day1.any():
-                borgou_rest = (data_weighted['province'] == 'Borgou') & (~borgou_day1)
-                borgou_pooled_rate = data_weighted.loc[borgou_rest, 'household_response_rate'].mean()
-                print(f"\nBorgou day 1 (2026-07-16): {borgou_day1.sum()} respondents excluded from "
-                      f"computing the Borgou non-response adjustment; assigned the rest-of-Borgou "
-                      f"pooled rate ({borgou_pooled_rate:.1%}) instead of their own.")
-                data_weighted.loc[borgou_day1, 'household_response_rate'] = borgou_pooled_rate
-
-        # Plateau non-response due to language barrier: 8 households in Plateau reached
-        # eligibility screening and were excluded specifically because the drawn respondent
-        # didn't speak the survey's administration language (Fon) -- confirmed as genuine
-        # non-response, not ineligibility, per the user 2026-08-19 ("they were nonresponsive
-        # because they could not speak the survey language"). These households were dropped
-        # as >90%-missing in 00_clean_data.ipynb and never appear in `data` at all, so they
-        # can't be individually weighted -- instead, every COMPLETED Plateau respondent's
-        # weight is inflated to also stand in for the households that couldn't be surveyed,
-        # so Plateau's weighted totals still reflect its true population.
-        # Source: data/4_validation_checks/00_unfinished_submissions.csv, rows with
-        # province==8 (Plateau) and language_1==0. Recompute this count if that file changes.
-        PLATEAU_LANGUAGE_NONRESPONSE_N = 8
-        if 'province' in data_weighted.columns:
-            plateau_mask = data_weighted['province'] == 'Plateau'
-            n_completed_plateau = plateau_mask.sum()
-            if n_completed_plateau > 0:
-                plateau_language_response_rate = n_completed_plateau / (n_completed_plateau + PLATEAU_LANGUAGE_NONRESPONSE_N)
-                print(f"\nPlateau language non-response: {PLATEAU_LANGUAGE_NONRESPONSE_N} households excluded "
-                      f"because the drawn respondent didn't speak the survey language, on top of "
-                      f"{n_completed_plateau} completed interviews. Inflating completed Plateau respondents' "
-                      f"weight by {1/plateau_language_response_rate:.3f}x ({plateau_language_response_rate:.1%} "
-                      f"effective response rate) so they also represent the households that couldn't be surveyed.")
-                data_weighted.loc[plateau_mask, 'household_response_rate'] *= plateau_language_response_rate
+        data_weighted['household_response_rate'] = household_response_rate(data_weighted)
 
         # Calculate average response rate by stratum
         stratum_response_rates = data_weighted.groupby(['province'])['household_response_rate'].mean()
@@ -566,7 +646,8 @@ def calculate_three_stage_weights(settlements_eligible, settlements_chosen, data
     
     # Check stratum proportions
     print("\nSample vs Population proportions (checking stratum weights):")
-    data_weighted.loc[data_weighted.province.isna()].to_csv("data/2_cleaned/1_weighted_na_province.csv")
+    if data_weighted.province.isna().any():
+        data_weighted.loc[data_weighted.province.isna()].to_csv("data/2_cleaned/1_weighted_na_province.csv")
     for province in data_weighted['province'].unique():
         print(province)
 
@@ -605,8 +686,8 @@ def calculate_three_stage_weights(settlements_eligible, settlements_chosen, data
         ('Stage 2 (Household)', 'stage2_weight'),
         ('Stage 3 (Respondent)', 'stage3_weight')
     ]:
-        weights = data_weighted[stage_col]
-        n_eff_stage = (weights.sum()**2) / (weights**2).sum()
+        w = data_weighted[stage_col]
+        n_eff_stage = (w.sum()**2) / (w**2).sum()
         deff_stage = n / n_eff_stage
         
         print(f"\n{stage_name}:")
@@ -616,46 +697,268 @@ def calculate_three_stage_weights(settlements_eligible, settlements_chosen, data
     
     print("\n" + "="*70)
     
-    return data_weighted, weights
+    return data_weighted, cluster_weights
+
+
+def kish_deff(w):
+    """Kish design effect from unequal weights: n * sum(w^2) / sum(w)^2."""
+    w = pd.Series(w).dropna()
+    return len(w) * (w ** 2).sum() / w.sum() ** 2
+
+
+def _shares(weights, groups):
+    return weights.groupby(groups).sum() / weights.sum()
+
+
+def compare_stratum_weight(settlements_eligible, settlements_chosen, data, **kwargs):
+    """
+    By stratum: population share, unweighted share, and weighted share with and without
+    the stratum weight (USE_STRATUM_WEIGHT on/off). Everything else (non-response, Borgou
+    day 1, Plateau language) is the same in both columns. Prints aggregates only.
+    """
+    import contextlib
+    import io
+
+    kwargs.pop('use_stratum_weight', None)
+    out = {}
+    for label, flag in [('weighted, with stratum weight', True), ('weighted, cluster weight only', False)]:
+        with contextlib.redirect_stdout(io.StringIO()):
+            dw, _ = calculate_three_stage_weights(settlements_eligible.copy(), settlements_chosen.copy(),
+                                                  data.copy(), use_stratum_weight=flag, **kwargs)
+        out[label] = _shares(dw['normalized_weight'], dw['province'])
+    pop = settlements_eligible.groupby('province')['population'].sum()
+    table = pd.DataFrame({
+        'population': pop / pop.sum(),
+        'unweighted': dw['province'].value_counts(normalize=True),
+        **out,
+    }).fillna(0)
+    print("Share of the total by stratum (%):")
+    print((table * 100).round(1).to_string())
+    for label in out:
+        print(f"  max |{label} - population|: {(table[label] - table['population']).abs().max() * 100:.1f} pts")
+    return table
 
 
 # ============================================================================
-# USAGE EXAMPLE
+# STAGE CHECKS
+# ============================================================================
+
+def check_stage_weights(cluster_weights, data_weighted, settlements_eligible, avg_household_size=5.5,
+                        clusters_allocated=None, size_col='proportion', out_dir=None, tol=0.05):
+    """
+    Diagnostic for the three weight stages, printed by stratum (no respondent rows).
+
+    Under PPS, stage 1 x stage 2 = (1/pi_i) * (M_i/hh_size)/m_i ~= N_h / (k_h * hh_size * m_i):
+    the cluster's population M_i cancels, but only if stage 1's size measure is the same
+    quantity as stage 2's population. Prints per stratum:
+      - whether the stage 1 size measure (p_i * N_h) matches the stage 2 population
+      - k_h (distinct surveyed clusters) next to the allocation (reference only)
+      - ratio of w1*w2 to N_h/(k_h*hh_size*m_i) (~1; certainty clusters give k_h*p_i > 1)
+      - certainty clusters (k_h*p_i >= 1) and clusters with stage 2 weight < 1
+      - mean stage 3
+      - Horvitz-Thompson population estimate (sum of M_i/pi_i) / frame population
+      - province shares: population, w1*w2, w12_expected*w3, all stages
+    Writes the per-cluster table to out_dir/02b_stage_weight_check_clusters.csv.
+
+    cluster_weights: second return value of calculate_three_stage_weights.
+    Returns (by_stratum, by_cluster).
+    """
+    cw = cluster_weights.copy()
+    cw['sample_number'] = cw['sample_number'].astype(str).str.strip()
+    stratum_pops = settlements_eligible.groupby('province')['population'].sum()
+
+    # Stage 1 size measure on the population scale vs stage 2's population
+    frame = settlements_eligible.set_index('geom_id')
+    size_share = frame[size_col] / frame.groupby('province')[size_col].transform('sum')
+    cw['frame_population'] = cw['geom_id'].map(frame['population'])
+    cw['stage1_size_as_population'] = cw['geom_id'].map(size_share) * cw['province'].map(stratum_pops)
+    cw['size_ratio'] = cw['population'] / cw['stage1_size_as_population']
+
+    cw['k_h_p_i'] = cw['k_h'] * cw['proportion_within_stratum']
+    cw['w1'] = cw['cluster_weight']
+    cw['w12'] = cw['w1'] * cw['stage2_weight']
+    cw['w12_expected'] = cw['province'].map(stratum_pops) / (
+        cw['k_h'] * avg_household_size * cw['households_visited'])
+    cw['w12_ratio'] = cw['w12'] / cw['w12_expected']
+    cw['ht_population'] = cw['w1'] * cw['population']
+
+    d = data_weighted.copy()
+    d['location'] = d['location'].astype(str).str.strip()
+    by_loc = d.groupby('location').agg(respondents=('location', 'size'),
+                                       mean_stage3=('stage3_weight', 'mean'))
+    cw = cw.join(by_loc, on='sample_number')
+    surveyed = cw[cw['respondents'].fillna(0) > 0]
+
+    name_cols = [c for c in ['name', 'settlement', 'village', 'admin3', 'commune'] if c in cw.columns]
+    name = name_cols[0] if name_cols else 'sample_number'
+    alloc = pd.Series(clusters_allocated or {}, dtype=float)
+
+    rows = {}
+    for prov, g in surveyed.groupby('province'):
+        rows[prov] = {
+            'size_measure_matches': bool(((g['size_ratio'] - 1).abs() <= tol).all()),
+            'size_ratio_min': g['size_ratio'].min(),
+            'size_ratio_max': g['size_ratio'].max(),
+            'k_h': g['geom_id'].nunique(),
+            'allocated': alloc.get(prov, np.nan),
+            'w12_ratio_mean': g['w12_ratio'].mean(),
+            'w12_ratio_min': g['w12_ratio'].min(),
+            'w12_ratio_max': g['w12_ratio'].max(),
+            'certainty_clusters': ", ".join(g.loc[g['k_h_p_i'] >= 1, name].astype(str)),
+            'stage2_below_1': ", ".join(g.loc[g['stage2_weight'] < 1, name].astype(str)),
+            'mean_stage3': d.loc[d['province'] == prov, 'stage3_weight'].mean(),
+            'ht_pop_over_frame': g['ht_population'].sum() / stratum_pops[prov],
+        }
+    by_stratum = pd.DataFrame(rows).T
+
+    # Province shares under each combination of stages (respondent-level)
+    d['w12'] = d['location'].map(surveyed.set_index('sample_number')['w12'])
+    d['w12_expected'] = d['location'].map(surveyed.set_index('sample_number')['w12_expected'])
+    all_col = 'normalized_weight_design' if 'normalized_weight_design' in d.columns else 'combined_weight_adjusted'
+    shares = pd.DataFrame({
+        'population': stratum_pops / stratum_pops.sum(),
+        'unweighted': d['province'].value_counts(normalize=True),
+        'w1*w2': _shares(d['w12'], d['province']),
+        'w12_expected*w3': _shares(d['w12_expected'] * d['stage3_weight'], d['province']),
+        'all stages': _shares(d[all_col], d['province']),
+    })
+
+    print("=" * 70)
+    print("STAGE WEIGHT CHECK (by stratum)")
+    print("=" * 70)
+    with pd.option_context('display.width', 200, 'display.max_columns', 20, 'display.max_colwidth', 60):
+        print("\nStage 1 size measure vs stage 2 population (ratio should be 1):")
+        print(by_stratum[['size_measure_matches', 'size_ratio_min', 'size_ratio_max']].to_string())
+        print("\nClusters: k_h (distinct surveyed) vs allocation (reference only):")
+        print(by_stratum[['k_h', 'allocated']].to_string())
+        print("\nw1*w2 / [N_h/(k_h*hh_size*m_i)] (should be ~1):")
+        print(by_stratum[['w12_ratio_mean', 'w12_ratio_min', 'w12_ratio_max']].astype(float).round(3).to_string())
+        print("\nCertainty clusters (k_h*p_i >= 1) and clusters with stage 2 weight < 1:")
+        print(by_stratum[['certainty_clusters', 'stage2_below_1']].to_string())
+        print("\nMean stage 3 (eligible adults per household) and HT population / frame:")
+        print(by_stratum[['mean_stage3', 'ht_pop_over_frame']].astype(float).round(3).to_string())
+        print(f"\nProvince shares (%); 'all stages' = {all_col}:")
+        print((shares * 100).round(1).to_string())
+
+    if not by_stratum['size_measure_matches'].all():
+        print("\n⚠️  Stage 1 size measure differs from stage 2 population in: "
+              f"{list(by_stratum.index[~by_stratum['size_measure_matches'].astype(bool)])} -- the "
+              "population does not cancel, so w1*w2 depends on cluster size.")
+
+    by_cluster = cw[[c for c in [*name_cols, 'sample_number', 'geom_id', 'province', 'population',
+                                 'frame_population', 'stage1_size_as_population', 'size_ratio', 'k_h',
+                                 'proportion_within_stratum', 'k_h_p_i', 'certainty_unit',
+                                 'inclusion_prob_exact', 'w1', 'households_visited', 'stage2_weight',
+                                 'w12', 'w12_expected', 'w12_ratio', 'ht_population', 'respondents',
+                                 'mean_stage3'] if c in cw.columns]]
+    if out_dir is not None:
+        from pathlib import Path
+        path = Path(out_dir) / "02b_stage_weight_check_clusters.csv"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        by_cluster.to_csv(path, index=False)
+        print(f"\nPer-cluster table written to {path}")
+    return by_stratum, by_cluster
+
+
+# ============================================================================
+# POST-STRATIFICATION
+# ============================================================================
+
+def poststratify(data, weight_col, cell_col, controls, cluster_col='location', min_n=20, min_clusters=2):
+    """
+    Post-stratify weights to known cell totals (Statistics Canada, Survey Methods and
+    Practices, 7.1.4.1): w_post = w * N_c / N^_c, where N^_c is the sum of the design
+    weights in cell c and N_c is the control total. The same formula applies to PPS
+    weights as to SRS. The result is renormalised to mean 1.
+
+    controls: Series (or dict) of control totals indexed by cell. Raises ValueError if a
+    respondent has no cell or a cell in the data has no control total.
+    Returns (weights Series aligned with data, summary DataFrame by cell). The printed
+    factor is scaled so 1 = cell already at its population share.
+    """
+    controls = pd.Series(controls, dtype=float)
+    cells = data[cell_col]
+    if cells.isna().any():
+        raise ValueError(f"{cells.isna().sum()} respondents have no '{cell_col}' -- cannot post-stratify")
+    missing = sorted(set(cells.unique()) - set(controls.dropna().index))
+    if missing:
+        raise ValueError(f"No control total for {cell_col} cell(s): {missing}")
+    w = data[weight_col].astype(float)
+    if w.isna().any():
+        raise ValueError(f"{w.isna().sum()} respondents have no '{weight_col}'")
+
+    n_hat = w.groupby(cells).sum()
+    unused = sorted(set(controls.index) - set(n_hat.index))
+    if unused:
+        print(f"⚠️  Control cells with no respondents (left out of the totals): {unused}")
+    N = controls.reindex(n_hat.index)
+    factor = N / n_hat
+    w_post = w * cells.map(factor)
+    w_post = w_post * len(w_post) / w_post.sum()
+
+    summary = pd.DataFrame({
+        'respondents': cells.value_counts(),
+        'clusters': data.groupby(cell_col)[cluster_col].nunique() if cluster_col in data.columns else np.nan,
+        'population_share': N / N.sum(),
+        'sample_share': cells.value_counts(normalize=True),
+        'design_share': n_hat / n_hat.sum(),
+        'factor': factor * w.sum() / N.sum(),
+        'final_share': w_post.groupby(cells).sum() / w_post.sum(),
+    })
+    thin = summary[(summary['respondents'] < min_n) | (summary['clusters'] < min_clusters)]
+
+    print("=" * 70)
+    print(f"POST-STRATIFICATION ON '{cell_col}'")
+    print("=" * 70)
+    out = summary.copy()
+    for c in ['population_share', 'sample_share', 'design_share', 'final_share']:
+        out[c] = (out[c] * 100).round(1)
+    print(out.round({'factor': 3}).to_string())
+    if len(thin):
+        print(f"\n⚠️  Thin cells (<{min_n} respondents or <{min_clusters} clusters): {list(thin.index)} -- "
+              "their factors rest on very little data.")
+    print(f"\nKish DEFF: {kish_deff(w):.2f} (design) -> {kish_deff(w_post):.2f} (post-stratified)")
+    return w_post, summary
+
+
+def apply_poststratification(data_weighted, settlements_eligible, on='province', **kwargs):
+    """
+    Keep the design-only weight as normalized_weight_design and, if `on` is set
+    (config.POSTSTRATIFY_ON), replace normalized_weight with the weight post-stratified to
+    settlements_eligible population totals by `on`. on=None leaves normalized_weight as is.
+    """
+    data_weighted = data_weighted.copy()
+    data_weighted['normalized_weight_design'] = data_weighted['normalized_weight']
+    data_weighted['combined_weight_design'] = data_weighted['combined_weight_adjusted']
+    if on is None:
+        print("Post-stratification skipped (POSTSTRATIFY_ON=None): normalized_weight is the design weight.")
+        return data_weighted, None
+    controls = settlements_eligible.groupby(on)['population'].sum()
+    data_weighted['normalized_weight'], summary = poststratify(
+        data_weighted, 'normalized_weight_design', on, controls, **kwargs)
+    # The pipeline (pipeline_output config WEIGHT_COL) weights by combined_weight_adjusted,
+    # so apply the same per-cell factor there too -- otherwise post-stratification would
+    # never reach the dashboard figures.
+    data_weighted['combined_weight_adjusted'] = (
+        data_weighted['combined_weight_design']
+        * data_weighted['normalized_weight'] / data_weighted['normalized_weight_design'])
+    return data_weighted, summary
+
+
+# ============================================================================
+# USAGE (Benin run: 02b_calculate_weights_KH.ipynb)
 # ============================================================================
 
 """
-# Load data
-settlements_eligible = pd.read_csv("niger_preselected_minpop_733.csv", index_col=0)
-settlements_chosen = pd.read_csv("settlements_chosen.csv")
-data = pd.read_csv("your_cleaned_data.csv")
+from src.config import USE_STRATUM_WEIGHT, PPS_CERTAINTY_UNITS, POSTSTRATIFY_ON, CLUSTERS_ALLOCATED
 
-# Clean population column
-settlements_chosen["population"] = (
-    settlements_chosen["population"].replace({",":""}, regex=True).astype(int)
+data_weighted, cluster_weights = calculate_three_stage_weights(
+    settlements_eligible, settlements_chosen, data,
+    avg_household_size=5.5,
+    use_stratum_weight=USE_STRATUM_WEIGHT,
+    certainty_units=PPS_CERTAINTY_UNITS,
 )
-
-# Calculate three-stage weights
-# IMPORTANT: Specify the correct column name for household members
-data_weighted, weights_summary = calculate_three_stage_weights(
-    settlements_eligible,
-    settlements_chosen,
-    data,
-    hh_member_col='hh_member_',  # Replace with your actual column name
-    avg_household_size=5.5  # Adjust based on Niger demographics
-)
-
-# Save results
-data_weighted.to_csv("data_with_three_stage_weights.csv", index=False)
-weights_summary.to_csv("weight_summary_by_cluster.csv", index=False)
-
-# Check weight distribution
-import matplotlib.pyplot as plt
-plt.figure(figsize=(10, 6))
-plt.hist(data_weighted['normalized_weight'], bins=50, edgecolor='black')
-plt.axvline(1.0, color='red', linestyle='--', label='Mean (should be 1.0)')
-plt.xlabel('Normalized Weight')
-plt.ylabel('Frequency')
-plt.title('Distribution of Survey Weights')
-plt.legend()
-plt.savefig('weight_distribution.png', dpi=300, bbox_inches='tight')
+check_stage_weights(cluster_weights, data_weighted, settlements_eligible, avg_household_size=5.5,
+                    clusters_allocated=CLUSTERS_ALLOCATED, out_dir="data/4_validation_checks")
+data_weighted, ps_summary = apply_poststratification(data_weighted, settlements_eligible, on=POSTSTRATIFY_ON)
 """

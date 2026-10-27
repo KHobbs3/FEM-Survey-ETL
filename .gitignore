@@ -6,3 +6,12 @@ table_analysis/.DS_Store
 data/*
 benin_app/
 .pipeline_output_git_backup/
+
+# Local documents and working files
+Benin Pipeline Changelog (Aug 2026).docx
+table_analysis/Benin Data Processing Methods.docx
+~$*.docx
+table_analysis/.Rapp.history
+table_analysis/tests/
+table_analysis/methods_note_figures.py
+table_analysis/02c_check_size_measure.py

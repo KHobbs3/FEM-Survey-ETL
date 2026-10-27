@@ -33,7 +33,7 @@ COUNTRY = "Benin"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-station_path = "/Users/kt/Documents/work/AIM Charities/FEM/Family Planning/2. Everything Radio/Radio Reach/cloudrf/output/gpkg/benin/fem_benin_buildings/"
+station_path = "/Users/kt/Documents/work/AIM Charities/FEM/2. Remote Desktop Notes/2. Family Planning/2. Everything Radio/Radio Reach/cloudrf/output/gpkg/benin/fem_benin_buildings/"
 
 # Raw mapped dataset (PII — never committed to app repo)
 # NOTE: must match the filename table_analysis/src/config.py's DIR_WEIGHTED_DATA
@@ -56,6 +56,13 @@ DIR_STATEMENT_LABELS = os.path.join(APP_DATA_DIR, "statement_labels.csv")
 # ── Survey constants ──────────────────────────────────────────────────────────
 
 WEIGHT_COL = "combined_weight_adjusted"
+
+# Design columns for the headline-indicator CIs. sample_number is the weights
+# table's cluster key, joined to the CORRECTED `location` from
+# table_analysis/02a_correct_locations (see src/funcs.py's merge), so it is
+# always the corrected cluster. Stratum = province, the sampling stratum.
+CI_CLUSTER_COL = "sample_number"
+CI_STRATUM_COL = "province"
 
 USER_GROUPS    = ["user", "past_user"]
 NONUSER_GROUPS = ["nonuser", "future_user"]

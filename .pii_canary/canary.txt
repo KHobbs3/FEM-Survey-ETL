@@ -1,3 +1,10 @@
 PII-CANARY-7f3a9c -- fake value, not participant data.
 This folder is read-protected exactly like the data folders (see .claude/settings.json).
 If Claude can ever print this line, the read protection is NOT working.
+
+Google Drive is also off-limits: Claude must not read Drive files, their contents,
+metadata or permissions (claude.ai Google Drive connector, mcp__claude_ai_Google_Drive__*).
+The app loads its CSVs from Drive, but stale files are re-uploaded by the researcher.
+
+Claude must not make git commits (or push). Leave changes uncommitted in the working
+tree; the researcher reviews and commits them.
