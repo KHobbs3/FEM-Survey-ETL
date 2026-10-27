@@ -3,11 +3,11 @@ data/
 raw_data/
 table_analysis/data/
 table_analysis/radio_matching/
-.pii_canary/
 *_WIDE*
 *Full Data*
 *.dta
 *.sav
+*.docx
 ~$*
 
 # Not part of this repo (togo_app is a separate Streamlit repo)

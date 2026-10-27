@@ -71,6 +71,19 @@ APP_DATA_DIR = os.environ.get(
 # Statement label mapping (non-PII, already in app repo)
 DIR_STATEMENT_LABELS = os.path.join(APP_DATA_DIR, "statement_labels.csv")
 
+# "Autre" write-in recoding (see other_recodes.py). Questions whose
+# "<question>_other" write-ins get exported for manual review; the reviewed
+# file is free text, so it lives with the data, not in the app.
+OTHER_RECODE_QUESTIONS = ["occupation", "religion", "radio_language", "reason_current_use"]
+OTHER_WRITEINS_EXPORT = os.environ.get(
+    "FEM_OTHER_WRITEINS",
+    str(PROJECT_ROOT / "table_analysis" / "data" / "4_validation_checks" / "other_writeins.csv"),
+)
+OTHER_RECODES_PATH = os.environ.get(
+    "FEM_OTHER_RECODES",
+    str(PROJECT_ROOT / "table_analysis" / "data" / "meta" / "other_recodes.csv"),
+)
+
 # ── Survey constants ──────────────────────────────────────────────────────────
 
 WEIGHT_COL = "combined_weight_adjusted"

@@ -23,6 +23,7 @@ from pipeline.utils import (
     split_weighted_prop, split_weighted_mean,
     save, load_raw
 )
+from pipeline.other_recodes import is_other_item, clean_writein
 
 # Region added on top of the shared SPLIT_COLS (used by several other ETL modules)
 # rather than editing SPLIT_COLS itself, so this stays scoped to the Access &
@@ -179,10 +180,13 @@ def run(df):
                           f"'{flag_col}' (question has no skip logic; constrained here).")
                 subset = subset[is_stockout]
             combined = subset[col].copy()
-            # Handle "other" free-text (original code checked == -88 but values are strings)
+            # Swap the "Autre" choice for its write-in. This used to match -88
+            # ("Je ne sais pas"), so write-ins were never used and "don't know"
+            # answers were replaced by whatever was in the other column.
             if other_col in subset.columns:
-                mask = combined.astype(str).str.startswith("-88") | (combined == -88)
-                combined.loc[mask] = subset.loc[mask, other_col]
+                writein = subset[other_col].apply(clean_writein)
+                mask = combined.apply(lambda v: pd.notna(v) and is_other_item(v)) & writein.notna()
+                combined.loc[mask] = writein[mask]
             # Keep the French half of "French/Ewe" labels (first segment)
             combined = combined.dropna().astype(str).str.split("/").str[0].str.strip()
             counts = combined.value_counts().reset_index()
