@@ -23,19 +23,32 @@ Pages: `respondents`, `access`, `statements`, `family_planning`, `personality`, 
 
 ## Recoding "Autre" write-ins and free-text reasons
 
-Two kinds of answers get coded (questions are listed in `config.py`):
-- **"Autre" write-ins** (`OTHER_RECODE_QUESTIONS`): `occupation`, `religion`, `radio_language`, `reason_current_use`, `reason_nonuse_main`. People who chose "Autre" often wrote a real answer in `<question>_other`.
+The recoding is done in `table_analysis`, on the survey data files, so every later notebook, script, this pipeline (and, in Niger, `3_linkage`) uses the recoded answers. Niger, Benin and Togo use the same code (`pipeline/other_recodes.py`) and recode the same questions. Each survey is matched against its own answer labels. Questions are listed in `config.py`:
+- **"Autre" write-ins** (`OTHER_RECODE_QUESTIONS`): `occupation`, `religion`, `radio_language`, `reason_current_use`, and the drivers & barriers questions: the main reasons `reason_use_main` / `reason_nonuse_main` and the lists `reason_use_mc`, `drivers_nonusers`, `reason_nonuse_mc`, `barriers_users`. People who chose "Autre" often wrote a real answer in `<question>_other`. A question without a `<question>_other` column in the data is skipped (a `[other] ... skipped` line says so).
 - **Free-text answers** (`FREE_TEXT_RECODE_QUESTIONS`): `reason_current_nonuse`, the open-ended reason for not using contraception.
 
-Steps (run from `pipeline_output/`):
+Coding uses local fuzzy matching. Nothing is sent to any API. (It replaced the earlier AI coding. `CLEAR_AI_CODES = False` in `config.py`: Togo's existing codes with `coded_by = ai`, checked one by one, are kept as codes; fuzzy matching only codes new or blank texts.)
 
-1. `python -m pipeline.other_recodes --ai` has Claude code every distinct text (`AI_CODE_LISTS`): the closest answer from the question's own choices (occupation, religion, ...) or, for the reasons for non-use, from the barriers list (`reason_nonuse_mc` / `barriers_users`). When nothing fits it gives a short new theme, so similar leftover answers are grouped together. It writes `table_analysis/data/meta/other_recodes-ai-gen.csv` (`OTHER_RECODES_PATH`), with `coded_by = ai` on each AI code. It prints totals only.
-   - This sends the distinct answer texts, and nothing else (no IDs, no other columns), to the Anthropic API. It needs `pip install anthropic` and an `ANTHROPIC_API_KEY` (or `ant auth login`).
-   - Without `--ai` it only exports the texts, uncoded, to `table_analysis/data/4_validation_checks/other_writeins.csv`.
-2. Run the pipeline. `run_pipeline` applies `other_recodes-ai-gen.csv` straight after loading, so every page and the personas use the AI codes until they're reviewed. With no recodes file it changes nothing.
-3. Review: correct `recode_to` in the file (an existing answer label, where one language is enough, e.g. "Artisan" matches "Artisan/…"; or a new label; blank keeps the answer as is), then re-run the pipeline. Once reviewed, you can save it as `other_recodes.csv` and point `OTHER_RECODES_PATH` at it.
+1. **Recode the data files**: from `table_analysis/`, `python 02z_recode_other.py`, after mapping and weights and before `03` (see `table_analysis/README.md`). It:
+   - **Refreshes the recodes file**, `table_analysis/data/meta/other_recodes-ai-gen.csv` (`OTHER_RECODES_PATH`; the file name is historical, and it now holds fuzzy and hand codes).
+     - Every new distinct text is added.
+     - Each uncoded text is compared with the question's own answer labels in this survey (`CODE_LISTS`: its own choices, the drivers list `reason_use_mc` / `drivers_nonusers`, or the barriers list `reason_nonuse_mc` / `barriers_users`). The comparison uses word- and character-level similarity, so typos and word forms still match.
+     - `recode_to` is filled only when the text *is* a label (`coded_by = fuzzy exact`), or the best label scores ≥ 0.55 and leads the next by ≥ 0.10 (`coded_by = fuzzy <score>`).
+     - Every other text gets its 3 best `candidates` and a `group` number linking similar texts. When a group's coded texts all share one code, it is copied to the uncoded ones (`coded_by = group`).
+     - Codes already in the file are never overwritten. Texts no longer in the data stay in the file with their codes.
+     - The answer labels per question go to `table_analysis/data/meta/other_recode_choices.csv`.
+   - **Rewrites the survey data files** with the recoded answers. An "Autre" item becomes the coded answer; the rest of a multi-select answer is kept, and a free-text answer is replaced. Only the recoded questions change. Each one gets a `_pre_recode__<question>` column with the answers as given. Re-running always starts from those answers, so it picks up new codes and never recodes twice.
 
-Re-running `--ai` after new data keeps every existing `recode_to` and only codes the new texts. Both files hold free text, so they stay in the data folder.
+   It prints counts only. `--no-refresh` recodes with the file as it is.
+2. **Review** the recodes file:
+   - Check the `fuzzy` / `group` codes, and fill `recode_to` for blank rows: an existing answer label (one language is enough, e.g. "Artisan" matches "Artisan/…") or a new label.
+   - `-` keeps the answer as written and stops it being suggested again.
+   - Blank means not reviewed yet.
+
+   Then re-run `02z_recode_other.py`, or the pipeline.
+3. **Run the pipeline.** `run_pipeline` runs the same step on the file it reads (`DIR_MAPPED_DATA`) before loading it. That file is always current, even if the recodes file changed after `02z` last ran. Use `--no-recode-refresh` to skip the refresh.
+
+Re-run `02z_recode_other.py` after re-running any notebook that rewrites the data files (mapping, locations, weights). `python -m pipeline.other_recodes --fuzzy` refreshes the recodes file only; with no flag, it exports the texts, uncoded, to `table_analysis/data/4_validation_checks/other_writeins.csv`. These files hold free text, so they stay in the data folder.
 
 ## Drivers & barriers by parent category
 

@@ -71,30 +71,41 @@ APP_DATA_DIR = os.environ.get(
 # Statement label mapping (non-PII, already in app repo)
 DIR_STATEMENT_LABELS = os.path.join(APP_DATA_DIR, "statement_labels.csv")
 
-# "Autre" write-in recoding (see other_recodes.py). Questions whose
-# "<question>_other" write-ins get exported for manual review; the reviewed
-# file is free text, so it lives with the data, not in the app.
+# "Autre" write-in recoding (see other_recodes.py), applied to the survey data
+# files by table_analysis/02z_recode_other.py. Same questions in Niger, Benin
+# and Togo: "<question>_other" write-ins, including the drivers/barriers main
+# reasons and lists (as 03_driver_barrier_table_w_counts reads them). A question
+# whose "<question>_other" column isn't in the data is skipped, with a printed
+# "[other] ... skipped" line. The recodes file is free text, so it lives with
+# the data, not in the app.
 OTHER_RECODE_QUESTIONS = ["occupation", "religion", "radio_language", "reason_current_use",
-                          "reason_nonuse_main"]
+                          "reason_use_main", "reason_nonuse_main",
+                          "reason_use_mc", "drivers_nonusers", "reason_nonuse_mc", "barriers_users"]
 # Questions whose answer is itself free text (no "Autre" choice / _other column).
 FREE_TEXT_RECODE_QUESTIONS = ["reason_current_nonuse"]
-# `--ai` codes each question against the answer labels of its "lists"
-# columns (its own choices, or the barriers list: non-users' reason_nonuse_mc
-# + users' barriers_users). "about" tells the model what the question asks.
+# `--fuzzy` matches each question's write-ins against the answer labels of
+# these columns in this survey's data: its own choices, or the drivers list
+# (users' reason_use_mc + non-users' drivers_nonusers) / barriers list
+# (non-users' reason_nonuse_mc + users' barriers_users).
 _BARRIERS = ["reason_nonuse_mc", "barriers_users"]
-AI_CODE_LISTS = {
-    "occupation":            {"lists": ["occupation"], "about": "the respondent's occupation"},
-    "religion":              {"lists": ["religion"], "about": "the respondent's religion"},
-    "radio_language":        {"lists": ["radio_language"],
-                              "about": "the language the respondent listens to the radio in"},
-    "reason_current_use":    {"lists": ["reason_current_use"],
-                              "about": "why the respondent uses contraception"},
-    "reason_nonuse_main":    {"lists": _BARRIERS,
-                              "about": "the main reason the respondent does not use contraception"},
-    "reason_current_nonuse": {"lists": _BARRIERS,
-                              "about": "why the respondent does not currently use contraception"},
+_DRIVERS = ["reason_use_mc", "drivers_nonusers"]
+CODE_LISTS = {
+    "occupation":            ["occupation"],
+    "religion":              ["religion"],
+    "radio_language":        ["radio_language"],
+    "reason_current_use":    ["reason_current_use"],
+    "reason_use_main":       _DRIVERS,
+    "reason_use_mc":         _DRIVERS,
+    "drivers_nonusers":      _DRIVERS,
+    "reason_nonuse_main":    _BARRIERS,
+    "reason_nonuse_mc":      _BARRIERS,
+    "barriers_users":        _BARRIERS,
+    "reason_current_nonuse": _BARRIERS,
 }
-AI_MODEL = "claude-opus-5-5"
+# Codes left by the retired AI coding (coded_by = "ai"): True clears them on the
+# next refresh (re-coded by fuzzy matching or left for hand-coding); False keeps
+# them as reviewed codes. Togo: kept (checked one by one; see the methods note).
+CLEAR_AI_CODES = False
 
 # Drivers/barriers lists for etl_driver_barrier_groups.py: each respondent's
 # answer is the first non-empty of these columns (user / non-user versions).

@@ -1003,7 +1003,7 @@ def _validate_other_recodes():
         return
     if not os.path.exists(OTHER_RECODES_PATH):
         _warn(f"No recodes file at {OTHER_RECODES_PATH} -- 'Autre' answers are not recoded. "
-              f"Run `python -m pipeline.other_recodes --ai`.")
+              f"Run table_analysis/02z_recode_other.py or the pipeline (both create it).")
         return
     rec = pd.read_csv(OTHER_RECODES_PATH, dtype=str).fillna("")
     if not _require(rec, os.path.basename(OTHER_RECODES_PATH), ["question", "other_text", "recode_to"]):
@@ -1012,9 +1012,13 @@ def _validate_other_recodes():
     if key.duplicated().any():
         _warn(f"{int(key.duplicated().sum())} duplicate question/text rows -- the first is used")
     for q, g in rec.groupby("question"):
-        coded = g["recode_to"].str.strip() != ""
-        ai = (g.get("coded_by", pd.Series("", index=g.index)) == "ai") & coded
-        _ok(f"{q}: {int(coded.sum())} of {len(g)} texts coded ({int(ai.sum())} by AI, not yet reviewed)")
+        code = g["recode_to"].str.strip()
+        by = g.get("coded_by", pd.Series("", index=g.index)).fillna("")
+        keep = code == "-"            # reviewed: leave as written
+        coded = (code != "") & ~keep
+        auto = coded & (by.str.startswith(("fuzzy", "rule")) | by.eq("group"))
+        _ok(f"{q}: {int(coded.sum())} of {len(g)} texts coded ({int(auto.sum())} automatic -- rule/fuzzy/group, "
+            f"review these), {int(keep.sum())} kept as written, {int((code == '').sum())} not yet reviewed")
 
 
 def _validate_change_over_time():
