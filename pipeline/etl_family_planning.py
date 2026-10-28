@@ -40,14 +40,22 @@ YESNO = {1:"Oui", 0:"Non"}
 # is just "are you doing *anything* to avoid pregnancy" -- that counts
 # withdrawal, the calendar method, etc. as "using", which potentially
 # inflates the headline rate relative to actually-effective methods.
-# CONTRACEPTIVE_METHODS' keys 1-9 and 15 are WHO's modern-method categories
-# (sterilisation, implants, pills, IUD, injectables, condoms, ring, patch,
-# vaginal barrier methods, emergency pills); 10-14 (withdrawal, abstinence,
-# calendar method, standard days, LAM) are the traditional/less-effective
-# methods -- see the CONTRACEPTIVE_METHODS comment in pipeline/config.py for
-# the source list.
-MODERN_METHOD_KEYS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 15}
+# CONTRACEPTIVE_METHODS' keys 1-9, 13-15 are modern methods (sterilisation,
+# implants, pills, IUD, injectables, condoms, ring, patch, vaginal barrier
+# methods, Standard Days, LAM, emergency pills); 10-12 (withdrawal,
+# abstinence, calendar method) are traditional. Standard Days and LAM count as
+# modern per Data for Impact's FP indicator guidance (couple-years of
+# protection), matching the Phone Pulse pages -- see the CONTRACEPTIVE_METHODS
+# comment in pipeline/config.py for the source list.
+MODERN_METHOD_KEYS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 14, 15}
 MODERN_METHODS = {CONTRACEPTIVE_METHODS[k] for k in MODERN_METHOD_KEYS if k in CONTRACEPTIVE_METHODS}
+# current_use_methods / known_contraceptive_options hold the form's English
+# label (after _strip_hausa), which for these methods is longer than the
+# CONTRACEPTIVE_METHODS name -- map it so _mentions_modern_method finds them.
+FORM_LABEL_TO_METHOD = {
+    "Standard Days Method (bead necklace)": "Standard Days",
+    "Lactational Amenorrhea Method": "Lactational Amenorrhea",
+}
 
 HAUSA_ENG = {
     "Il n'est pas intéressé": "He's not interested",
@@ -102,6 +110,9 @@ def _strip_hausa(text: str) -> str:
     return text if text else np.nan
 
 def _translate_hausa(s):
+    # Answers recoded to a barrier (other_recodes.py) hold its bilingual "Hausa / English" label
+    if s not in HAUSA_ENG and " / " in str(s):
+        return _strip_hausa(s)
     return HAUSA_ENG[s]
 
 def _mentions_modern_method(cell):
@@ -112,7 +123,8 @@ def _mentions_modern_method(cell):
     (2026-09-04)."""
     if pd.isna(cell):
         return False
-    return any(m.strip() in MODERN_METHODS for m in str(cell).split("|"))
+    return any(FORM_LABEL_TO_METHOD.get(m.strip(), m.strip()) in MODERN_METHODS
+               for m in str(cell).split("|"))
 
 
 def _funnel_row(df, split_col, group_val):
@@ -187,7 +199,11 @@ TIME_TO_PREGNANT_RAW_TO_CODE = {
     "Ban sani ba / I dont know": -88,
     "Na fi son inyi shiru / Prefer not to say": -99,
 }
-WANTS_TO_DELAY_CODES = [3, 4, 6]
+# 2026-10-26: DHS-style definition, per the user -- 4 (more than 2 years) and
+# 6 (no more children) only. 3 ("1-2 years") was dropped: the bucket straddles
+# DHS's 2-year line, so someone wanting to wait 13 months landed in the same
+# bucket as someone wanting 23, over-counting unmet need.
+WANTS_TO_DELAY_CODES = [4, 6]
 
 
 def _unmet_row(df, split_col, group_val):
@@ -233,6 +249,101 @@ def _unmet_row(df, split_col, group_val):
     }
 
 
+# ── Headline indicators with design-based 95% CIs ─────────────────────────────
+# Full sample and all women. Point estimates use the same weighted,
+# whole-group denominators as _funnel_row / _unmet_row. CIs come from a
+# Rao-Wu rescaling bootstrap: within each stratum of n_h clusters, draw n_h-1
+# clusters with replacement and scale their weights by n_h/(n_h-1) x times
+# drawn; CI = 2.5th-97.5th percentile of the replicate estimates. Women are
+# computed from the same replicates (domain estimation), not resampled alone.
+CI_CLUSTER_COL = "location"   # surveyed settlement; weights join on it
+CI_STRATUM_COL = "state"
+N_BOOT = 1000
+BOOT_SEED = 2026
+
+
+def _headline_flags(df):
+    """Boolean arrays the headline indicators are built from."""
+    using_any = df["current_use"].fillna("NA").str.contains('Oui').to_numpy()
+    timing = df["time_before_preferred_pregnancy"].map(TIME_TO_PREGNANT_RAW_TO_CODE)
+    unmet = timing.isin(WANTS_TO_DELAY_CODES).to_numpy() & ~using_any
+    return {
+        "any":    using_any,
+        "modern": df["current_use_methods"].apply(_mentions_modern_method).to_numpy(),
+        "unmet":  unmet,
+        "open":   df["future_intent"].fillna("NA").str.contains('Oui').to_numpy(),
+        "aware":  df["known_contraceptive_options"].apply(_mentions_modern_method).to_numpy(),
+    }
+
+
+def _headline_values(w, pop, f):
+    def share(num, den):
+        d = (w * den).sum()
+        return (w * (num & den)).sum() / d if d else np.nan
+
+    mcpr, cpr, need = share(f["modern"], pop), share(f["any"], pop), share(f["unmet"], pop)
+    return {
+        "mcpr":             mcpr,
+        "unmet_need":       need,
+        "unmet_demand":     share(f["unmet"] & f["open"], pop),
+        # Official DHS formula: mCPR / (total CPR + unmet need) -- see
+        # page_family_planning.py render_unmet for why total CPR, not mCPR.
+        "demand_satisfied": mcpr / (cpr + need) if (cpr + need) else np.nan,
+        "aware_modern":     share(f["aware"], pop),
+        "aware_modern_nonusers": share(f["aware"], pop & ~f["any"]),
+    }
+
+
+def _rao_wu_multipliers(df, rng):
+    """(N_BOOT, n_rows) weight multipliers, or None if the design columns are missing."""
+    missing = [c for c in (CI_CLUSTER_COL, CI_STRATUM_COL) if c not in df.columns]
+    if missing:
+        print(f"  [family_planning] WARNING: {missing} not in data -- headline CIs left blank")
+        return None
+    clusters = df[CI_CLUSTER_COL].astype(str).str.strip().to_numpy()
+    strata = df[CI_STRATUM_COL].astype(str).str.strip().to_numpy()
+    mult = np.ones((N_BOOT, len(df)))
+    for s in np.unique(strata):
+        rows = strata == s
+        cl, pos = np.unique(clusters[rows], return_inverse=True)
+        n_h = len(cl)
+        if n_h < 2:
+            print(f"  [family_planning] WARNING: stratum {s!r} has 1 cluster -- no CI variance from it")
+            continue
+        draws = rng.integers(0, n_h, size=(N_BOOT, n_h - 1))
+        counts = np.stack([np.bincount(d, minlength=n_h) for d in draws])
+        mult[:, rows] = (counts * n_h / (n_h - 1))[:, pos]
+    print(f"  [family_planning] CI design: {len(np.unique(strata))} strata, "
+          f"{len(np.unique(clusters))} clusters, {N_BOOT} bootstrap replicates")
+    return mult
+
+
+def _headline_table(df, women_mask):
+    w = df[WEIGHT_COL].fillna(0).to_numpy()
+    n_no_weight = int(df[WEIGHT_COL].isna().sum())
+    if n_no_weight:
+        print(f"  [family_planning] note: {n_no_weight} respondents have no weight "
+              f"(excluded from estimates, still counted in n_unweighted)")
+    f = _headline_flags(df)
+    pops = {"full_sample": np.ones(len(df), dtype=bool), "women": women_mask.to_numpy()}
+    mult = _rao_wu_multipliers(df, np.random.default_rng(BOOT_SEED))
+
+    rows = []
+    for pop_name, pop in pops.items():
+        point = _headline_values(w, pop, f)
+        reps = None
+        if mult is not None:
+            reps = pd.DataFrame([_headline_values(w * m, pop, f) for m in mult])
+        for metric, value in point.items():
+            n = int((pop & ~f["any"]).sum()) if metric == "aware_modern_nonusers" else int(pop.sum())
+            lo = hi = np.nan
+            if reps is not None:
+                lo, hi = np.nanpercentile(reps[metric], [2.5, 97.5])
+            rows.append({"population": pop_name, "metric": metric, "value": value,
+                         "ci_low": lo, "ci_high": hi, "n_unweighted": n})
+    return pd.DataFrame(rows)
+
+
 def run(df):
     os.makedirs(APP_DATA_DIR, exist_ok=True)
     print("  [family_planning] running...")
@@ -263,6 +374,12 @@ def run(df):
             unmet_rows.append(_unmet_row(df, split_col, grp))
     save(pd.DataFrame([r for r in unmet_rows if r]),
          os.path.join(APP_DATA_DIR, "fp_unmet.csv"), "unmet need/demand")
+
+    # ── Headline indicators: full sample + all women ──────────────────────────
+    women = df["gender"].fillna("").str.contains("Femme|Female")
+    print(f"  [family_planning] headline: {len(df)} respondents, {int(women.sum())} women")
+    save(_headline_table(df, women),
+         os.path.join(APP_DATA_DIR, "fp_headline.csv"), "headline indicators")
 
     # ── Timing of next pregnancy ──────────────────────────────────────────────
     if "time_before_preferred_pregnancy" in df.columns:

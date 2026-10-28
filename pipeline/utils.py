@@ -18,8 +18,12 @@ def weighted_prop(df, bool_col, weight=WEIGHT_COL):
     return (valid[bool_col] * valid[weight]).sum() / valid[weight].sum()
 
 
-def weighted_mean(df, num_col, weight=WEIGHT_COL):
+def weighted_mean(df, num_col, weight=WEIGHT_COL, exclude=(-88, -99, -22)):
     valid = df[[num_col, weight]].dropna()
+    if exclude:
+        # Skip codes (don't know / prefer not to say / other) are not real
+        # quantities -- averaging them in drags travel times and costs negative.
+        valid = valid[~valid[num_col].isin(exclude)]
     if valid.empty or valid[weight].sum() == 0:
         return np.nan
     return (valid[num_col] * valid[weight]).sum() / valid[weight].sum()

@@ -16,6 +16,9 @@ Usage:
     # Run only specific pages:
     python pipeline/run_pipeline.py --pages access statements
 
+    # Recode with the "Autre" recodes file as it is, without the --fuzzy refresh:
+    python pipeline/run_pipeline.py --no-recode-refresh
+
 The app reads only the CSVs in niger_app/data/ — the raw PII dataset
 never leaves this pipeline folder.
 """
@@ -31,6 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 
 from pipeline.config import DIR_MAPPED_DATA, APP_DATA_DIR, DIR_STATEMENT_LABELS, station_path
 from pipeline.utils import load_raw
+from pipeline.other_recodes import recode_dataset
 
 import pipeline.etl_respondents     as etl_respondents
 import pipeline.etl_access         as etl_access
@@ -39,10 +43,12 @@ import pipeline.etl_family_planning as etl_family_planning
 import pipeline.etl_personality     as etl_personality
 import pipeline.etl_personas        as etl_personas
 import pipeline.etl_radio           as etl_radio
+import pipeline.etl_driver_barrier_groups as etl_driver_barrier_groups
 
-ALL_PAGES = ["respondents", "access", "statements", "family_planning", "personality", "personas", "radio"]
+ALL_PAGES = ["respondents", "access", "statements", "family_planning", "personality", "personas", "radio",
+             "driver_barrier_groups"]
 
-def run_pipeline(pages=None):
+def run_pipeline(pages=None, refresh_recodes=True):
     pages = pages or ALL_PAGES
     t0 = time.time()
 
@@ -61,6 +67,10 @@ def run_pipeline(pages=None):
         print("  Set the FEM_MAPPED_DATA environment variable or update config.py")
         sys.exit(1)
 
+    # The same "Autre" recoding step as table_analysis/02z_recode_other.py, on the file read here:
+    # the --fuzzy refresh adds new write-ins to the recodes file (codes already in it are kept),
+    # then the file's answers are recoded in place, so this run and every other script agree.
+    recode_dataset([DIR_MAPPED_DATA], refresh=refresh_recodes)
     df = load_raw(DIR_MAPPED_DATA)
     print()
 
@@ -84,6 +94,8 @@ def run_pipeline(pages=None):
                 etl_personas.run(df)
             elif page == "radio":
                 etl_radio.run(df, station_path)
+            elif page == "driver_barrier_groups":
+                etl_driver_barrier_groups.run(df)
             else:
                 print(f"  WARNING: unknown page '{page}' — skipping")
         except Exception as e:
@@ -115,5 +127,9 @@ if __name__ == "__main__":
         "--pages", nargs="*", choices=ALL_PAGES,
         help=f"Pages to process (default: all). Choices: {ALL_PAGES}",
     )
+    parser.add_argument(
+        "--no-recode-refresh", action="store_true",
+        help="apply the recodes file as it is, without the --fuzzy refresh of other_recodes.py",
+    )
     args = parser.parse_args()
-    run_pipeline(pages=args.pages)
+    run_pipeline(pages=args.pages, refresh_recodes=not args.no_recode_refresh)

@@ -22,7 +22,21 @@ from pipeline.utils import (
     split_weighted_prop, split_weighted_mean,
     save, load_raw
 )
+from pipeline.other_recodes import is_other_item, clean_writein
 
+
+def _wtt_minutes(series):
+    """willingness_to_travel → minutes via WTT_MAP. Like other select_one
+    fields it may hold bilingual 'Hausa / English' label text, so match on
+    the English part. Prints the match rate so a label mismatch (which would
+    otherwise silently empty the willingness chart) is visible."""
+    english = series.dropna().astype(str).str.split(" / ").str[-1].str.strip()
+    minutes = english.map(WTT_MAP).reindex(series.index)
+    n_answered, n_mapped = series.notna().sum(), minutes.notna().sum()
+    print(f"  [access] willingness_to_travel: {n_mapped}/{n_answered} answers mapped to minutes")
+    if n_mapped < n_answered:
+        print(f"  [access]   unmapped labels: {sorted(set(english[minutes.loc[english.index].isna()]))}")
+    return minutes
 
 
 def run(df):
@@ -34,7 +48,7 @@ def run(df):
 
     # Map willingness to travel to minutes
     if "willingness_to_travel" in df.columns:
-        df["wtt_minutes"] = df["willingness_to_travel"].map(WTT_MAP)
+        df["wtt_minutes"] = _wtt_minutes(df["willingness_to_travel"])
 
     # ── Helpers ───────────────────────────────────────────────────────────────
     # The survey uses bilingual strings, e.g.:
@@ -116,10 +130,13 @@ def run(df):
         if col in df.columns:
             subset = users if label == "users" else nonusers
             combined = subset[col].copy()
-            # Handle "other" free-text (original code checked == -88 but values are strings)
+            # Swap the "Autre" choice for its write-in. This used to match -88
+            # ("Je ne sais pas"), so write-ins were never used and "don't know"
+            # answers were replaced by whatever was in the other column.
             if other_col in subset.columns:
-                mask = combined.astype(str).str.startswith("-88") | (combined == -88)
-                combined.loc[mask] = subset.loc[mask, other_col]
+                writein = subset[other_col].apply(clean_writein)
+                mask = combined.apply(lambda v: pd.notna(v) and is_other_item(v)) & writein.notna()
+                combined.loc[mask] = writein[mask]
             # Strip Hausa prefix (everything before " / ") for clean display
             combined = combined.dropna().astype(str).str.split(" / ").str[-1].str.strip()
             counts = combined.value_counts().reset_index()
@@ -221,9 +238,7 @@ def run(df):
          "affordability metrics")
 
     # ── 5. Composite barrier rates ────────────────────────────────────────────
-    df = df.copy()
-    if "willingness_to_travel" in df.columns:
-        df["wtt_minutes"] = df["willingness_to_travel"].map(WTT_MAP)
+    df = df.copy()  # wtt_minutes was already added at the top of run()
 
     def _is_yes_series(series):
         s = series.astype(str).str.strip()
