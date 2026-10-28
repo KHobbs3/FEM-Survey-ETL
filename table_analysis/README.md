@@ -27,6 +27,7 @@ Paths and settings are in `src/config.py`; shared functions in `src/funcs.py`.
 | 3 | `02a_correct_locations.ipynb` | Fixes cluster assignments (e.g. the 8 Toffo respondents) |
 | 4 | `02b_calculate_weights_KH.ipynb` | Three-stage weights (below) → `02_fem_survey_benin_weighted.csv` |
 | 5 | `02b_validate_weights.ipynb` | Re-derives the weights and checks them |
+| 5z | `02z_recode_other.py` | Recodes "Autre" write-ins (occupation, religion, radio language, reasons for use, drivers & barriers) and the free-text reason for non-use into the mapped and weighted files, so every later step uses them. Refreshes the recodes file first (fuzzy matching). Re-run after any of steps 2–4. See "Recoding 'Autre' write-ins" in `../pipeline_output/README.md` |
 | 6 | `03_driver_barrier_table_w_counts.ipynb` | Drivers & barriers table |
 | 6b | `03b_check_drivers_barriers_quality.py` | Response-quality flags (needs `src/quality.py`, not yet in this folder) |
 | 7 | `04_questions_by_station.py`, `04_questions_supply_table_updated.ipynb` | Questions by radio-station coverage area; supply table |

@@ -53,6 +53,60 @@ APP_DATA_DIR = os.environ.get(
 # Statement label mapping (non-PII, already in app repo)
 DIR_STATEMENT_LABELS = os.path.join(APP_DATA_DIR, "statement_labels.csv")
 
+# "Autre" write-in recoding (see other_recodes.py), applied to the survey data
+# files by table_analysis/02z_recode_other.py. Same questions in Niger, Benin
+# and Togo: "<question>_other" write-ins, including the drivers/barriers main
+# reasons and lists (as 03_driver_barrier_table_w_counts reads them). A question
+# whose "<question>_other" column isn't in the data is skipped, with a printed
+# "[other] ... skipped" line. The recodes file is free text, so it lives with
+# the data, not in the app.
+OTHER_RECODE_QUESTIONS = ["occupation", "religion", "radio_language", "reason_current_use",
+                          "reason_use_main", "reason_nonuse_main",
+                          "reason_use_mc", "drivers_nonusers", "reason_nonuse_mc", "barriers_users"]
+# Questions whose answer is itself free text (no "Autre" choice / _other column).
+FREE_TEXT_RECODE_QUESTIONS = ["reason_current_nonuse"]
+# `--fuzzy` matches each question's write-ins against the answer labels of
+# these columns in this survey's data: its own choices, or the drivers list
+# (users' reason_use_mc + non-users' drivers_nonusers) / barriers list
+# (non-users' reason_nonuse_mc + users' barriers_users).
+_BARRIERS = ["reason_nonuse_mc", "barriers_users"]
+_DRIVERS = ["reason_use_mc", "drivers_nonusers"]
+CODE_LISTS = {
+    "occupation":            ["occupation"],
+    "religion":              ["religion"],
+    "radio_language":        ["radio_language"],
+    "reason_current_use":    ["reason_current_use"],
+    "reason_use_main":       _DRIVERS,
+    "reason_use_mc":         _DRIVERS,
+    "drivers_nonusers":      _DRIVERS,
+    "reason_nonuse_main":    _BARRIERS,
+    "reason_nonuse_mc":      _BARRIERS,
+    "barriers_users":        _BARRIERS,
+    "reason_current_nonuse": _BARRIERS,
+}
+# Codes left by the retired AI coding (coded_by = "ai"): True clears them on the
+# next refresh (re-coded by fuzzy matching or left for hand-coding); False keeps
+# them as reviewed codes. Benin: kept.
+CLEAR_AI_CODES = False
+
+# Drivers/barriers lists for etl_driver_barrier_groups.py: each respondent's
+# answer is the first non-empty of these columns (user / non-user versions).
+DB_LISTS = {
+    "Driver":  ["reason_use_mc", "drivers_nonusers"],
+    "Barrier": ["reason_nonuse_mc", "barriers_users"],
+}
+# Which half of the bilingual "A/B" labels is the display language
+# (parent category = that half, up to the first ':').
+DB_LABEL_INDEX = 0
+OTHER_WRITEINS_EXPORT = os.environ.get(
+    "FEM_OTHER_WRITEINS",
+    str(PROJECT_ROOT / "table_analysis" / "data" / "4_validation_checks" / "other_writeins.csv"),
+)
+OTHER_RECODES_PATH = os.environ.get(
+    "FEM_OTHER_RECODES",
+    str(PROJECT_ROOT / "table_analysis" / "data" / "meta" / "other_recodes-ai-gen.csv"),
+)
+
 # ── Survey constants ──────────────────────────────────────────────────────────
 
 WEIGHT_COL = "combined_weight_adjusted"

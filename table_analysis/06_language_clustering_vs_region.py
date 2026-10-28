@@ -24,8 +24,10 @@ Information) plus a per-cluster language & region profile.
 No individual-level data is exported -- only cluster-level aggregates -- consistent
 with the rest of the pipeline.
 
-Output: data/3_final/language_region_clustering_26_08_24.csv
+Output: data/3_final/language_region_clustering_<yy_mm_dd>.csv (run date)
 """
+
+from datetime import datetime
 
 import pandas as pd
 import numpy as np
@@ -33,6 +35,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, adjusted_rand_score, normalized_mutual_info_score
 
 from src.config import DIR_WEIGHTED_DATA, DIR_FINAL
+from src.recodes import apply_writein_recodes
 
 N_CLUSTERS = 4  # matches the 4 assumed region groups, for direct comparability
 RANDOM_STATE = 42
@@ -57,6 +60,8 @@ def _clean_language(text):
 
 def main():
     data = pd.read_csv(DIR_WEIGHTED_DATA, low_memory=False)
+    # "Autre" radio languages -> the language written in (reviewed recodes), as in 03/04
+    data = apply_writein_recodes(data)
     data["region"] = data["province"].map(PROVINCE_TO_REGION)
 
     # ── Build respondent x language binary matrix ──────────────────────────────
@@ -135,7 +140,7 @@ def main():
     profile.attrs["ari"] = ari
     profile.attrs["nmi"] = nmi
 
-    out_path = DIR_FINAL / "language_region_clustering_26_08_24.csv"
+    out_path = DIR_FINAL / f"language_region_clustering_{datetime.today().strftime('%y_%m_%d')}.csv"
     profile.to_csv(out_path, index=False)
     print(f"\nSaved: {out_path}")
     print(profile.to_string(index=False))

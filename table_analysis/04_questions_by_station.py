@@ -5,8 +5,10 @@ import numpy as np
 from datetime import datetime
 import geopandas as gpd
 import glob
+from src.recodes import apply_writein_recodes
 
 data=pd.read_csv(DIR_WEIGHTED_DATA)
+data=apply_writein_recodes(data)   # "Autre" write-ins -> reviewed recodes (occupation, radio_language, ...)
 survey = pd.read_excel(DIR_META_DATA, sheet_name='survey')
 choices = pd.read_excel(DIR_META_DATA, sheet_name='choices')
 

@@ -19,6 +19,7 @@ import pandas as pd
 from src.config import (DIR_WEIGHTED_DATA, DIR_META_DATA, DIR_STATEMENT_LINKS, DIR_VALIDATE,
                         STATEMENT_LIKERT_MAP, GEO_SPLIT_COL, QA_KEY_COL, load_statement_links)
 from src import quality
+from src.recodes import apply_writein_recodes
 
 KEY_CANDIDATES = ["KEY", "key", QA_KEY_COL]
 ENUMERATOR_CANDIDATES = ["enumerator", "enumerator_name", "enum_name", "username"]
@@ -38,7 +39,7 @@ def rate_table(flags, by):
     return table
 
 
-data = pd.read_csv(DIR_WEIGHTED_DATA, low_memory=False)
+data = apply_writein_recodes(pd.read_csv(DIR_WEIGHTED_DATA, low_memory=False))   # same answers as 03
 choices = pd.read_excel(DIR_META_DATA, sheet_name="choices")
 links = load_statement_links()
 DIR_VALIDATE.mkdir(parents=True, exist_ok=True)
